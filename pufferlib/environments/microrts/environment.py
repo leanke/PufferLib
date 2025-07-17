@@ -12,7 +12,7 @@ import pufferlib.environments
 def env_creator(name='GlobalAgentCombinedRewardEnv'):
     return functools.partial(make, name)
 
-def make(name, buf=None):
+def make(name, buf=None, seed=None):
     '''Gym MicroRTS creation function
     
     This library appears broken. Step crashes in Java.
@@ -23,11 +23,11 @@ def make(name, buf=None):
     else:
         raise ValueError(f'Unknown environment: {name}')
 
-    with pufferlib.utils.Suppress():
-        return GlobalAgentCombinedRewardEnv()
+    with pufferlib.pufferlib.Suppress():
+        env = GlobalAgentCombinedRewardEnv()
 
-    env.reset = pufferlib.utils.silence_warnings(env.reset)
-    env.step = pufferlib.utils.silence_warnings(env.step)
+    env.reset = pufferlib.pufferlib.silence_warnings(env.reset)
+    env.step = pufferlib.pufferlib.silence_warnings(env.step)
 
     env = MicroRTS(env)
     env = shimmy.GymV21CompatibilityV0(env=env)

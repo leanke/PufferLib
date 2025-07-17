@@ -7,6 +7,7 @@ import functools
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
+import pufferlib.pufferlib
 
 
 def env_creator(name='Airstriker-Genesis'):
@@ -22,7 +23,7 @@ def make(name='Airstriker-Genesis', framestack=4, buf=None):
         FireResetEnv,
         MaxAndSkipEnv,
     )
-    with pufferlib.utils.Suppress():
+    with pufferlib.pufferlib.Suppress():
         env = retro.make(name)
 
     env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -32,41 +33,41 @@ def make(name='Airstriker-Genesis', framestack=4, buf=None):
     env = gym.wrappers.GrayScaleObservation(env)
     env = gym.wrappers.FrameStack(env, framestack)
     return pufferlib.emulation.GymnasiumPufferEnv(
-        env=env, postprocessor_cls=AtariFeaturizer, buf=buf)
+        env=env, buf=buf)
 
-class AtariFeaturizer(pufferlib.emulation.Postprocessor):
-    def reset(self, obs):
-        self.epoch_return = 0
-        self.epoch_length = 0
-        self.done = False
+# class AtariFeaturizer(pufferlib.emulation.Postprocessor):
+#     def reset(self, obs):
+#         self.epoch_return = 0
+#         self.epoch_length = 0
+#         self.done = False
 
-    #@property
-    #def observation_space(self):
-    #    return gym.spaces.Box(0, 255, (1, 84, 84), dtype=np.uint8)
+#     #@property
+#     #def observation_space(self):
+#     #    return gym.spaces.Box(0, 255, (1, 84, 84), dtype=np.uint8)
 
-    def observation(self, obs):
-        return np.array(obs)
-        return np.array(obs[1], dtype=np.float32)
+#     def observation(self, obs):
+#         return np.array(obs)
+#         return np.array(obs[1], dtype=np.float32)
 
-    def reward_done_truncated_info(self, reward, done, truncated, info):
-        return reward, done, truncated, info
-        if 'lives' in info:
-            if info['lives'] == 0 and done:
-                info['return'] = info['episode']['r']
-                info['length'] = info['episode']['l']
-                info['time'] = info['episode']['t']
-                return reward, True, info
-            return reward, False, info
+#     def reward_done_truncated_info(self, reward, done, truncated, info):
+#         return reward, done, truncated, info
+#         if 'lives' in info:
+#             if info['lives'] == 0 and done:
+#                 info['return'] = info['episode']['r']
+#                 info['length'] = info['episode']['l']
+#                 info['time'] = info['episode']['t']
+#                 return reward, True, info
+#             return reward, False, info
 
-        if self.done:
-            return reward, done, info
+#         if self.done:
+#             return reward, done, info
 
-        if done:
-            info['return'] = self.epoch_return
-            info['length'] = self.epoch_length
-            self.done = True
-        else:
-            self.epoch_length += 1
-            self.epoch_return += reward
+#         if done:
+#             info['return'] = self.epoch_return
+#             info['length'] = self.epoch_length
+#             self.done = True
+#         else:
+#             self.epoch_length += 1
+#             self.epoch_return += reward
 
-        return reward, done, info
+#         return reward, done, info

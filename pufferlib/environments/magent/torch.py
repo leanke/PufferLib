@@ -3,7 +3,7 @@ from torch import nn
 import pufferlib.models
 
 
-class Policy(pufferlib.models.Policy):
+class Policy(pufferlib.models.Default):
     '''Based off of the DQN policy in MAgent'''
     def __init__(self, env, hidden_size=256, output_size=256, kernel_num=32):
         '''The CleanRL default Atari policy: a stack of three convolutions followed by a linear layer

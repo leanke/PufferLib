@@ -229,13 +229,13 @@ class Convolutional(nn.Module):
         self.value_fn = pufferlib.pytorch.layer_init(
             nn.Linear(output_size, 1), std=1)
 
-    def forward(self, observations, state=None):
+    def forward_eval(self, observations, state=None):
         hidden = self.encode_observations(observations)
         actions, value = self.decode_actions(hidden)
         return actions, value
 
-    def forward_train(self, observations, state=None):
-        return self.forward(observations, state)
+    def forward(self, observations, state=None):
+        return self.forward_eval(observations, state)
 
     def encode_observations(self, observations, state=None):
         if self.channels_last:

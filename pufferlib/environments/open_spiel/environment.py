@@ -3,7 +3,7 @@ import numpy as np
 import functools
 
 import pufferlib
-from pufferlib import namespace
+from pufferlib.pufferl import PuffeRL
 import pufferlib.emulation
 import pufferlib.environments
 

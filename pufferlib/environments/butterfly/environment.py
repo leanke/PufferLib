@@ -9,7 +9,7 @@ import pufferlib.environments
 def env_creator(name='cooperative_pong_v5'):
     return functools.partial(make, name)
 
-def make(name, buf=None):
+def make(name, buf=None, seed=None):
     pufferlib.environments.try_import('pettingzoo.butterfly', 'butterfly')
     if name == 'cooperative_pong_v5':
         from pettingzoo.butterfly import cooperative_pong_v5 as pong

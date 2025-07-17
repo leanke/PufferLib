@@ -8,8 +8,8 @@ import functools
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
-import pufferlib.postprocess
-import pufferlib.utils
+import pufferlib.pufferlib
+
 
 
 class TransposeObs(gym.Wrapper):
@@ -19,18 +19,18 @@ class TransposeObs(gym.Wrapper):
 def env_creator(name='crafter'):
     return functools.partial(make, name)
 
-def make(name, buf=None):
+def make(name, buf=None, seed=None):
     '''Crafter creation function'''
     if name == 'crafter':
         name = 'CrafterReward-v1'
 
     pufferlib.environments.try_import('crafter')
     env = gym.make(name)
-    env.reset = pufferlib.utils.silence_warnings(env.reset)
+    env.reset = pufferlib.pufferlib.silence_warnings(env.reset)
     env = shimmy.GymV21CompatibilityV0(env=env)
     env = RenderWrapper(env)
     env = TransposeObs(env)
-    env = pufferlib.postprocess.EpisodeStats(env)
+    env = pufferlib.pufferlib.EpisodeStats(env)
     return pufferlib.emulation.GymnasiumPufferEnv(env=env, buf=buf)
 
 class RenderWrapper(gym.Wrapper):

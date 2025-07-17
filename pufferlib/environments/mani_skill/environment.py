@@ -40,7 +40,7 @@ class ManiPufferEnv(pufferlib.PufferEnv):
             'sim_freq': sim_freq,
             'control_freq': control_freq
         }
-        self.env = gym.make(name, reward_mode='delta', num_envs=num_envs,
+        self.env = gym.make(name, reward_mode=None, num_envs=num_envs,
             render_mode=render_mode, sim_config=sim_config)
         self.env = ManiSkillVectorEnv(self.env, auto_reset=True, ignore_terminations=False, record_metrics=True)
         self.agents_per_batch = num_envs

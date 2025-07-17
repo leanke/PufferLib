@@ -3,20 +3,21 @@ import functools
 
 import pufferlib
 import pufferlib.emulation
-import pufferlib.postprocess
+import pufferlib.pufferlib
 
 
-def env_creator(name='MountainCarContinuous-v0'):
+def env_creator(name='MountainCarContinuous'):
     return functools.partial(make, name)
 
-def make(name, render_mode='rgb_array', buf=None):
+def make(name, render_mode='rgb_array', buf=None, seed=None):
     '''Create an environment by name'''
+    if name == 'mountaincar-continuous':
+        name = 'MountainCarContinuous'
     env = gymnasium.make(name, render_mode=render_mode)
-    if name == 'MountainCarContinuous-v0':
-        env = MountainCarWrapper(env)
+    env = MountainCarWrapper(env)
 
-    env = pufferlib.postprocess.ClipAction(env)
-    env = pufferlib.postprocess.EpisodeStats(env)
+    env = pufferlib.pufferlib.ClipAction(env)
+    env = pufferlib.pufferlib.EpisodeStats(env)
     return pufferlib.emulation.GymnasiumPufferEnv(env=env, buf=buf)
 
 class MountainCarWrapper(gymnasium.Wrapper):

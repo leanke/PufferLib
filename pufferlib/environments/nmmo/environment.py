@@ -5,8 +5,8 @@ import functools
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
-import pufferlib.wrappers
-import pufferlib.postprocess
+import pufferlib.pufferlib
+
 
 
 def env_creator(name='nmmo'):
@@ -17,11 +17,11 @@ def make(name, *args, buf=None, **kwargs):
     nmmo = pufferlib.environments.try_import('nmmo')
     env = nmmo.Env(*args, **kwargs)
     env = NMMOWrapper(env)
-    env = pufferlib.postprocess.MultiagentEpisodeStats(env)
-    env = pufferlib.postprocess.MeanOverAgents(env)
+    env = pufferlib.pufferlib.MultiagentEpisodeStats(env)
+    env = pufferlib.pufferlib.MeanOverAgents(env)
     return pufferlib.emulation.PettingZooPufferEnv(env=env, buf=buf)
 
-class NMMOWrapper(pufferlib.postprocess.PettingZooWrapper):
+class NMMOWrapper(pufferlib.pufferlib.PettingZooWrapper):
     '''Remove task spam'''
     @property
     def render_mode(self):

@@ -7,13 +7,13 @@ import functools
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
-import pufferlib.utils
+# import pufferlib.utils
 
 
 def env_creator(name='MineRLBasaltFindCave-v0'):
     return functools.partial(make, name=name)
 
-def make(name, buf=None):
+def make(name, buf=None, seed=None):
     '''Minecraft environment creation function'''
 
     pufferlib.environments.try_import('minerl')

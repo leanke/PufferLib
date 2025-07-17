@@ -7,7 +7,7 @@ import functools
 import pufferlib
 import pufferlib.emulation
 import pufferlib.environments
-import pufferlib.postprocess
+import pufferlib.pufferlib
 
 ALIASES = {
     'spiders': 'GDY-Spiders-v0',
@@ -17,7 +17,7 @@ def env_creator(name='spiders'):
     return functools.partial(make, name)
 
 # TODO: fix griddly
-def make(name, buf=None):
+def make(name, buf=None, seed=None):
     '''Griddly creation function
 
     Note that Griddly environments do not have observation spaces until
@@ -28,10 +28,10 @@ def make(name, buf=None):
     import warnings
     warnings.warn('Griddly has been segfaulting in the latest build and we do not know why. Submit a PR if you find a fix!')
     pufferlib.environments.try_import('griddly')
-    with pufferlib.utils.Suppress():
+    with pufferlib.pufferlib.Suppress():
         env = gym.make(name)
         env.reset() # Populate observation space
 
     env = shimmy.GymV21CompatibilityV0(env=env)
-    env = pufferlib.postprocess.EpisodeStats(env)
+    env = pufferlib.pufferlib.EpisodeStats(env)
     return pufferlib.emulation.GymnasiumPufferEnv(env, buf=buf)

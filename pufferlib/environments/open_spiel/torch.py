@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 import pufferlib.emulation
-from pufferlib.models import Policy as Base
+from pufferlib.models import Default as Base
 
 class Policy(Base):
     def __init__(self, env, input_size=128, hidden_size=128):
