@@ -207,7 +207,7 @@ if not NO_OCEAN:
 
         if 'matsci' in c_ext.name:
             c_ext.include_dirs.append('/usr/local/include')
-            c_ext.extra_link_args.extend(['-L/usr/local/lib', '-llammps'])
+            c_ext.extra_link_args.extend(['-DENABLE_VFS, -L/usr/local/lib', '-llammps'])
 
         if "mgba" in c_ext.name:
             print(f"Configuring {c_ext.name} with mGBA library")
