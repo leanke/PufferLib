@@ -1,0 +1,13 @@
+from pufferlib.ocean.mgba.mgba import (
+    mGBA,
+    STREAM_COLOR_PURPLE,
+    STREAM_COLOR_BLUE,
+    STREAM_COLOR_GREEN,
+    STREAM_COLOR_RED,
+    STREAM_COLOR_PINK,
+    STREAM_COLOR_YELLOW,
+)
+
+__all__ = ["mGBA", "STREAM_COLOR_PURPLE", "STREAM_COLOR_BLUE", 
+           "STREAM_COLOR_GREEN", "STREAM_COLOR_RED", "STREAM_COLOR_PINK", 
+           "STREAM_COLOR_YELLOW"]

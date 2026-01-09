@@ -209,6 +209,12 @@ if not NO_OCEAN:
             c_ext.include_dirs.append('/usr/local/include')
             c_ext.extra_link_args.extend(['-L/usr/local/lib', '-llammps'])
 
+        if "mgba" in c_ext.name:
+            print(f"Configuring {c_ext.name} with mGBA library")
+            c_ext.extra_objects = []  # Remove raylib
+            c_ext.include_dirs.append('/usr/include/mgba')
+            c_ext.extra_link_args.extend(['-lmgba'])
+
 # Check if CUDA compiler is available. You need cuda dev, not just runtime.
 torch_extensions = []
 if not NO_TRAIN:
