@@ -5,6 +5,10 @@ import multiprocessing
 from gymnasium import spaces
 import pufferlib
 from pufferlib.ocean.mgba import binding
+import uuid
+
+from pufferlib.pufferlib import ENV_ERROR
+
 
 STREAM_COLOR_BLUE = "#0000FF"
 STREAM_COLOR_GREEN = "#00A36C"
@@ -15,12 +19,15 @@ STREAM_COLOR_YELLOW = "#DAEE01"
 
 WS_URL = "wss://transdimensional.xyz/broadcast" # "ws://localhost:3344/broadcast" #
 
+
+run_id = uuid.uuid4().hex[:8]
+
 class mGBA(pufferlib.PufferEnv):
     counter_lock = multiprocessing.Lock()
     counter = multiprocessing.Value('i', 0)
-    def __init__(self, num_envs=1, render_mode=None, headless=False, rom_path=None, 
+    def __init__(self, num_envs=1, render_mode=None, headless=False, rom_path=None, state_path=None,
                  frameskip=4, max_episode_length=20480, continuous=False, log_interval=128,
-                 stream_enabled=False, stream_user=None, stream_color=None, stream_extra=None,
+                 stream_enabled=False, stream_user=None, stream_color=None, stream_extra=None, full_reset=True,
                  stream_interval=500, buf=None, seed=0):
         with mGBA.counter_lock:
             env_id = mGBA.counter.value
@@ -38,10 +45,10 @@ class mGBA(pufferlib.PufferEnv):
 
         self.screen_width = 160
         self.screen_height = 144
-        
+        # 3 for RGB, 5 for RAM values
         self.single_observation_space = spaces.Box(
             low=0, high=255,
-            shape=(self.screen_height, self.screen_width, 3),
+            shape=(self.screen_height * self.screen_width * 3 + 5,),
             dtype=np.float32
         )
         self.single_action_space = spaces.Discrete(9)
@@ -51,8 +58,9 @@ class mGBA(pufferlib.PufferEnv):
         self.c_envs = binding.vec_init(
             self.observations, self.actions, self.rewards,
             self.terminals, self.truncations, num_envs, seed, 
-            headless=headless, rom_path=rom_path, 
-            frameskip=frameskip, max_episode_length=max_episode_length
+            headless=headless, rom_path=rom_path, state_path=state_path,
+            frameskip=frameskip, max_episode_length=max_episode_length, full_reset=full_reset
+
         )
         
         self.stream_enabled = stream_enabled
@@ -70,32 +78,68 @@ class mGBA(pufferlib.PufferEnv):
     def _start_stream(self):
         try:
             import websockets.sync.client as ws_client
-            self._ws = ws_client.connect(WS_URL)
-            print(f"Connected to {WS_URL}")
+            self._ws_client = ws_client
+            self._ws = ws_client.connect(WS_URL, close_timeout=5)
+            # print(f"Connected to {WS_URL}")
         except Exception as e:
             print(f"Stream connection failed: {e}")
-            self.stream_enabled = False
+            self._ws = None
+    
+    def _reconnect_stream(self):
+        if self._ws:
+            try:
+                self._ws.close()
+            except:
+                pass
+            self._ws = None
+        try:
+            self._ws = self._ws_client.connect(WS_URL, close_timeout=5)
+            # print(f"Reconnected to {WS_URL}")
+            return True
+        except Exception as e:
+            print(f"Stream reconnection failed: {e}")
+            return False
     
     def _broadcast(self):
         if not self._ws:
+            if self.stream_enabled:
+                self._reconnect_stream()
             return
         try:
             for i, coord_list in enumerate(self.coords):
                 if coord_list: 
                     msg = json.dumps({
                         "metadata": {
-                            "user": self.stream_user,
+                            "user": self.stream_user + "\n",
                             "color": self.stream_color,
-                            "extra": self.stream_extra + f"{self.env_id}-{i+1}" # self.stream_extra,
-                            # "env_id": i
+                            "extra": self.stream_extra + "\n", # self.stream_extra,
+                            "env_id": f"{run_id}:{self.env_id}:{i+1}\n"
                         },
                         "coords": coord_list
                     })
                     self._ws.send(msg)
             self.coords = [[] for _ in range(self.num_agents)]
         except Exception as e:
-            print(f"Stream error: {e}")
-            self.stream_enabled = False
+            # print(f"Stream error: {e}, attempting reconnect...")
+            if self._reconnect_stream():
+                # Retry sending after reconnect
+                try:
+                    for i, coord_list in enumerate(self.coords):
+                        if coord_list:
+                            msg = json.dumps({
+                                "metadata": {
+                                    "user": self.stream_user + "\n",
+                                    "color": self.stream_color,
+                                    "extra": self.stream_extra + "\n",
+                                    "env_id": f"{run_id}:{self.env_id}:{i+1}\n"
+                                },
+                                "coords": coord_list
+                            })
+                            self._ws.send(msg)
+                    self.coords = [[] for _ in range(self.num_agents)]
+                except Exception as retry_e:
+                    print(f"Retry failed: {retry_e}")
+                    self.coords = [[] for _ in range(self.num_agents)]
     
     def reset(self, seed=None):
         self.tick = 0
@@ -133,7 +177,9 @@ class mGBA(pufferlib.PufferEnv):
     def close(self):
         if self._ws:
             try:
-                self._ws.close()
+                self._ws.close(timeout=2)
             except:
                 pass
+            self._ws = None
+        self.stream_enabled = False
         binding.vec_close(self.c_envs)
