@@ -4,12 +4,19 @@ NUMPY_INCLUDE := $(shell $(PYTHON) -c "import numpy; print(numpy.get_include())"
 OCEAN_DIR := pufferlib/ocean/mgba
 
 DEBUG ?= 0
+PROFILE ?= 0
+
 ifeq ($(DEBUG),1)
 	OPT_FLAGS := -O0 -g -fsanitize=address,undefined,bounds,pointer-overflow,leak -fno-omit-frame-pointer
 	LINK_OPT_FLAGS := -g -fsanitize=address,undefined,bounds,pointer-overflow,leak
+else ifeq ($(PROFILE),1)
+	# Profile build: optimized with debug symbols for perf/profiling
+	OPT_FLAGS := -O2 -g -flto -march=native -mtune=native -ffast-math -funroll-loops -DENABLE_PERF_COUNTERS
+	LINK_OPT_FLAGS := -O2 -g -flto
 else
-	OPT_FLAGS := -O2 -flto
-	LINK_OPT_FLAGS := -O2
+	# Release build: maximum optimization (Strategy #9 from optim_strat.md)
+	OPT_FLAGS := -O3 -flto -march=native -mtune=native -ffast-math -DNDEBUG -fomit-frame-pointer -funroll-loops
+	LINK_OPT_FLAGS := -O3 -flto
 endif
 
 CFLAGS := -DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION -DPLATFORM_DESKTOP -I$(NUMPY_INCLUDE) -Wno-alloc-size-larger-than -Wno-implicit-function-declaration -fmax-errors=3 $(OPT_FLAGS) -DENABLE_VFS
@@ -40,9 +47,22 @@ help:
 	@echo "mGBA Makefile"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make                 - Build mgba binding"
+	@echo "  make                 - Build mgba binding (release, optimized)"
 	@echo "  make clean           - Clean environment"
+	@echo "  make test            - Run quick test"
+	@echo "  make bench           - Run benchmark"
 	@echo ""
 	@echo "Options:"
 	@echo "  DEBUG=1              - Build with debug symbols and sanitizers"
+	@echo "  PROFILE=1            - Build optimized with debug symbols for profiling"
+
+# Quick test target
+.PHONY: test bench
+test: mgba
+	@echo "Running quick test..."
+	@cd $(shell pwd) && $(PYTHON) test_mgba.py 100
+
+bench: mgba
+	@echo "Running benchmark (1000 steps)..."
+	@cd $(shell pwd) && $(PYTHON) test_mgba.py 1000
 

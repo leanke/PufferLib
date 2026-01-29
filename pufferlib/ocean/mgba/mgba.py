@@ -45,10 +45,11 @@ class mGBA(pufferlib.PufferEnv):
 
         self.screen_width = 160
         self.screen_height = 144
-        # 3 for RGB, 5 for RAM values
+        self.scaled_width = 80
+        self.scaled_height = 72
         self.single_observation_space = spaces.Box(
             low=0, high=255,
-            shape=(self.screen_height * self.screen_width * 3 + 5,),
+            shape=(self.scaled_height * self.scaled_width + 5,),  # 80*72 + 5 = 5765
             dtype=np.float32
         )
         self.single_action_space = spaces.Discrete(9)
@@ -122,7 +123,6 @@ class mGBA(pufferlib.PufferEnv):
         except Exception as e:
             # print(f"Stream error: {e}, attempting reconnect...")
             if self._reconnect_stream():
-                # Retry sending after reconnect
                 try:
                     for i, coord_list in enumerate(self.coords):
                         if coord_list:

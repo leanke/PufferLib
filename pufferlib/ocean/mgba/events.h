@@ -1,6 +1,21 @@
-#include "events.h"
+#ifndef EVENTS_H
+#define EVENTS_H
 
-// List of all events (auto-generated from events.json)
+#include <stdint.h>
+#include <stddef.h>
+#include "mgba_core.h"
+
+typedef struct {
+    uint16_t address;
+    uint8_t bit;
+    const char* name;
+} Event;
+
+typedef struct {
+    const Event* events;
+    size_t count;
+} EventList;
+
 const Event EVENT_LIST[] = {
     {0xD747, 0, "Followed Oak Into Lab"},
     {0xD747, 3, "Hall Of Fame Dex Rating"},
@@ -30,7 +45,7 @@ const Event EVENT_LIST[] = {
     {0xD751, 7, "Beat Viridian Gym Trainer 5"},
     {0xD752, 0, "Beat Viridian Gym Trainer 6"},
     {0xD752, 1, "Beat Viridian Gym Trainer 7"},
-    {0xD754, 0, "Bought Museum Ticket"},
+    // {0xD754, 0, "Bought Museum Ticket"},
     {0xD754, 1, "Got Old Amber"},
     {0xD755, 2, "Beat Pewter Gym Trainer 0"},
     {0xD755, 6, "Got Tm34"},
@@ -506,3 +521,6 @@ const Event EVENT_LIST[] = {
     {0xD882, 2, "Beat Articuno"}
 };
 const size_t EVENT_COUNT = sizeof(EVENT_LIST) / sizeof(Event);
+
+
+#endif // EVENTS_H

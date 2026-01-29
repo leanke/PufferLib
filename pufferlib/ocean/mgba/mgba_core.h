@@ -18,7 +18,6 @@
 #include <mgba/gb/core.h>
 #include <mgba/gb/interface.h>
 
-// Full definition for mGBA type
 typedef struct {
   struct mCore *core;
   color_t *video_buffer;
@@ -26,7 +25,10 @@ typedef struct {
   char state_path[256];
   int32_t frame_skip;
   bool render_enabled;
+  bool uses_shared_rom;
 } Emu;
+
+#include "mgba_optim.h" // needed below Emu struct?
 
 typedef enum {
   GB_KEY_A = (1 << 0),      // 0x01
@@ -121,6 +123,8 @@ void mgba_init_core(Emu *env, const char *rom_path) {
   if (!env)
     return;
 
+  env->uses_shared_rom = false;
+
   mLogSetDefaultLogger(&s_silentLogger);
   env->core = mCoreFind(rom_path);
   if (!env->core || !env->core->init(env->core)) {
@@ -144,6 +148,9 @@ void mgba_init_core(Emu *env, const char *rom_path) {
   if (env->video_buffer) {
     env->core->setVideoBuffer(env->core, env->video_buffer, w);
   }
+  
+  configure_headless_mode(env->core);
+  
   env->core->reset(env->core);
   strncpy(env->rom_path, rom_path, sizeof(env->rom_path) - 1);
 }
@@ -172,14 +179,13 @@ bool c_load_state_file(Emu *env, const char *path) {
 void initial_load_state(Emu *env, const char *state_path) {
   struct VFile *vf = VFileOpen(state_path, O_RDONLY);
   if (vf) {
-    suppress_stderr();  // Silence libpng warnings
+    suppress_stderr();
     bool load_success = mCoreLoadStateNamed(env->core, vf, SAVESTATE_ALL);
     restore_stderr();
+    vf->close(vf);
     if (!load_success) {
-      vf->close(vf);
       fprintf(stderr, "Warning: Failed to load state from file: %s\n", state_path);
     }
-    vf->close(vf);
   } else {
     fprintf(stderr, "Warning: Could not open state file: %s\n", state_path);
   }

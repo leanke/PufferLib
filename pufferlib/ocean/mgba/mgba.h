@@ -2,13 +2,14 @@
 #define MGBA_ENV_H
 
 #include "mgba_core.h"
-// #include "events.h"
-
+#include "events.h"
 #define SCREEN_WIDTH 160
-#define SCREEN_HEIGHT 144
-#define SCREEN_PIXELS (SCREEN_WIDTH * SCREEN_HEIGHT)
-#define EXTRA_OBS 5 // Add 5 for the ram obs (coords, badges, p_count)
-#define TOTAL_OBSERVATIONS (SCREEN_PIXELS * 3 + EXTRA_OBS)
+#define SCALED_WIDTH 80
+#define SCALED_HEIGHT 72
+#define SCALED_PIXELS (SCALED_WIDTH * SCALED_HEIGHT)
+
+#define EXTRA_OBS 5 // extras x, y, map_n, badges, party_count
+#define TOTAL_OBSERVATIONS (SCALED_PIXELS + EXTRA_OBS)
 
 
 
@@ -24,7 +25,6 @@
 #define PKM_LEVEL_ADDR_4 0xD210
 #define PKM_LEVEL_ADDR_5 0xD23C
 #define PKM_LEVEL_ADDR_6 0xD268
-#define PKM_
 // PARTY_ADDR = [0xD164, 0xD165, 0xD166, 0xD167, 0xD168, 0xD169]
 // #define PKMN1_ADDR 0xD16B
 // #define PKMN2_ADDR 0xD197
@@ -41,6 +41,7 @@
 // #define REWARD_MAP 0.001f    // 0.2f
 #define REWARD_UNIQUE_COORD 0.0025f
 #define REWARD_LEVEL 0.25f
+#define REWARD_EVENT 0.1f
 // #define STAGNATION_LIMIT 1000
 
 
@@ -51,21 +52,19 @@
 
 typedef struct {
   float episode_length;
+  float level_sum;
   float episode_return;
-  float total_steps;
-  float unique_coords;
-  float level_sum; 
-
-  float badges;
-  float money;
-  float party_count;
   float pkmn1_lvl;
+  float money;
   float pkmn2_lvl;
+  float event_sum;
   float pkmn3_lvl;
-  float pkmn4_lvl; 
+  float unique_coords;
+  float pkmn4_lvl;
+  float party_count;
   float pkmn5_lvl;
+  float badges;
   float pkmn6_lvl;
-
   float n;
 } Log;
 
@@ -123,9 +122,9 @@ typedef struct {
   int32_t stagnation;
   uint8_t *visited_coords; 
   uint8_t *prev_visited_coords; 
-  uint32_t unique_coords_count;  
-
-
+  uint32_t unique_coords_count;
+  int32_t prev_event_sum;
+  float prev_event_sum;
   bool full_reset;
 } mGBA;
 
@@ -142,19 +141,40 @@ void add_log(mGBA *env);
 static inline void update_observations(mGBA *env) {
   if (!env || !env->emu.video_buffer || !env->observations)
     return;
-  for (int i = 0; i < SCREEN_PIXELS; i++) {
-    color_t p = env->emu.video_buffer[i];
-    // printf("Pixel %d: 0x%06X\n", i, p);
-    env->observations[i * 3] = (float)((p >> 16) & 0xFF);
-    env->observations[i * 3 + 1] = (float)((p >> 8) & 0xFF);
-    env->observations[i * 3 + 2] = (float)(p & 0xFF);
+  
+  PREFETCH_READ(env->emu.video_buffer);
+  PREFETCH_WRITE(env->observations);
+  const color_t *vbuf = env->emu.video_buffer;
+  float *obs = env->observations;
+  
+  // downsamepling and greyscale
+  for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
+    for (int sx = 0; sx < SCALED_WIDTH; sx++) {
+      int src_y = sy * 2;
+      int src_x = sx * 2;
+      
+      float gray_sum = 0.0f;
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+          int src_idx = (src_y + dy) * SCREEN_WIDTH + (src_x + dx);
+          color_t pixel = vbuf[src_idx];
+          float r = (float)((pixel >> 16) & 0xFF);
+          float g = (float)((pixel >> 8) & 0xFF);
+          float b = (float)(pixel & 0xFF);
+          gray_sum += 0.299f * r + 0.587f * g + 0.114f * b;
+        }
+      }
+      obs[sy * SCALED_WIDTH + sx] = gray_sum * 0.25f; // 4pxl avg
+    }
   }
-  int offset = SCREEN_PIXELS * 3;
-  env->observations[offset + 0] = (float)env->ram.x;
-  env->observations[offset + 1] = (float)env->ram.y;
-  env->observations[offset + 2] = (float)env->ram.map_n;
-  env->observations[offset + 3] = (float)env->ram.badges;
-  env->observations[offset + 4] = (float)env->ram.party_count;
+  
+  // extras
+  int offset = SCALED_PIXELS;
+  obs[offset + 0] = (float)env->ram.x;
+  obs[offset + 1] = (float)env->ram.y;
+  obs[offset + 2] = (float)env->ram.map_n;
+  obs[offset + 3] = (float)env->ram.badges;
+  obs[offset + 4] = (float)env->ram.party_count;
 }
 
 
@@ -196,22 +216,21 @@ void free_allocated(mGBA *env) {
 }
 void add_log(mGBA *env) {
   RamState *ram = &env->ram;
+
   env->log.episode_length = env->step_count;
-  env->log.episode_return = env->score;
-  env->log.total_steps += env->step_count;
-  env->log.unique_coords = env->unique_coords_count;
   env->log.level_sum = calc_level_sum(ram);
-
-  env->log.badges = ram->badges;
-  env->log.money = ram->money;
-  env->log.party_count = ram->party_count;
+  env->log.episode_return = env->score;
   env->log.pkmn1_lvl = ram->pkmn1_lvl;
+  env->log.money = ram->money;
   env->log.pkmn2_lvl = ram->pkmn2_lvl;
+  env->log.event_sum = env->prev_event_sum;
   env->log.pkmn3_lvl = ram->pkmn3_lvl;
+  env->log.unique_coords = env->unique_coords_count;
   env->log.pkmn4_lvl = ram->pkmn4_lvl;
+  env->log.party_count = ram->party_count;
   env->log.pkmn5_lvl = ram->pkmn5_lvl;
+  env->log.badges = ram->badges;
   env->log.pkmn6_lvl = ram->pkmn6_lvl;
-
   env->log.n++;
 }
 
@@ -251,8 +270,18 @@ int calc_level_sum(RamState *ram) {
   level_sum += ram->pkmn6_lvl;
   return level_sum;
 }
+int calc_event_sum(Emu *emu) {
+  int sum = 0;
+  for (size_t i = 0; i < EVENT_COUNT; ++i) {
+    uint8_t value = read_mem(emu, EVENT_LIST[i].address);
+    sum += (value >> EVENT_LIST[i].bit) & 1;
+  }
+  return sum;
+}
 static float calculate_rewards(mGBA *env) {
   float reward = 0.0f;
+  PREFETCH_READ(env->visited_coords);
+
   update_ram(env);
   RamState *ram = &env->ram;
   RamState *prev_ram = &env->prev_ram;
@@ -284,13 +313,18 @@ static float calculate_rewards(mGBA *env) {
     reward += REWARD_UNIQUE_COORD; // fake memory?
     env->prev_visited_coords[idx] = 1;
   }
-  if (level_sum > prev_level_sum && ram->party_count > prev_ram->party_count) {
-    reward += REWARD_LEVEL;
+  if (level_sum > prev_level_sum && ram->party_count >= prev_ram->party_count) {
+    int level_diff = level_sum - prev_level_sum;
+    reward += REWARD_LEVEL * level_diff;
   }
 
-  // add a func for events.h
+  // Event reward delta
+  int event_sum = calc_event_sum(&env->emu);
+  if (event_sum > env->prev_event_sum) {
+    reward += (event_sum - env->prev_event_sum) * REWARD_EVENT;
+  }
 
-
+  env->prev_event_sum = event_sum;
   env->prev_ram = env->ram;
   return reward;
 }
@@ -315,6 +349,7 @@ void c_reset(mGBA *env) {
   env->score = 0.0f;
   env->stagnation = 0;
   env->unique_coords_count = 1;
+  env->prev_event_sum = calc_event_sum(&env->emu);
 
   for (int i = 0; i < 4; i++)
     env->emu.core->runFrame(env->emu.core);
@@ -328,23 +363,22 @@ void c_step(mGBA *env) {
   env->terminals[0] = 0;
   env->step_count++;
 
-  set_keys(&env->emu, action_to_key(env->actions[0]));
+  // batch frame stepping
   int skip = env->emu.frame_skip > 0 ? env->emu.frame_skip : 1;
-  for (int i = 0; i < skip; i++) {
-    env->emu.core->runFrame(env->emu.core);
-    env->frame_count++;
-  }
-  set_keys(&env->emu, 0);
+  uint32_t action_key = action_to_key(env->actions[0]);
+  STEP_N_FRAMES(env->emu.core, action_key, skip);
+  env->frame_count += skip;
+
   float reward = calculate_rewards(env);
 
   update_observations(env);
   env->rewards[0] = reward;
   env->score += reward;
 
-  if (env->step_count >= env->max_episode_length) { // || env->stagnation > STAGNATION_LIMIT
+  if (env->step_count >= env->max_episode_length) {
     env->terminals[0] = 1;
     add_log(env);
-    env->prev_visited_coords = env->visited_coords;
+    memcpy(env->prev_visited_coords, env->visited_coords, VISITED_COORDS_SIZE);
     c_reset(env);
   }
 }
@@ -358,6 +392,11 @@ void c_close(mGBA *env) {
     mCoreConfigDeinit(&env->emu.core->config);
     env->emu.core->deinit(env->emu.core);
     env->emu.core = NULL;
+  }
+
+  if (env->emu.uses_shared_rom) {
+    release_shared_rom();
+    env->emu.uses_shared_rom = false;
   }
 
   if (env->emu.video_buffer) {

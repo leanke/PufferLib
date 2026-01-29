@@ -30,12 +30,12 @@ class MGBA(nn.Module):
     Observation: (144, 160, 3) screen pixels
     Action: 9 discrete actions
     """
-    def __init__(self, env, framestack=3, hidden_size=128, **kwargs):
+    def __init__(self, env, framestack=1, hidden_size=128, **kwargs):
         super().__init__()
         self.hidden_size = hidden_size
         self.is_continuous = False
         
-        cnn_out_size = 14336
+        cnn_out_size = 1920 # did i match pokegym?
         self.cnn = nn.Sequential(
             pufferlib.pytorch.layer_init(
                 nn.Conv2d(framestack, 32, 8, stride=4)
@@ -84,13 +84,13 @@ class MGBA(nn.Module):
     def encode_observations(self, observations, state=None):
         batch = observations.shape[0]
         # screen
-        screen_flat = observations[:, :144*160*3]
-        screen = screen_flat.view(batch, 144, 160, 3).permute(0, 3, 1, 2).float()
+        screen_flat = observations[:, :72*80*1]
+        screen = screen_flat.view(batch, 72, 80, 1).permute(0, 3, 1, 2).float()
         screen_norm = screen / 255.0
         screen_net = self.cnn(screen_norm)
 
         # ram
-        ram_flat = observations[:, 144*160*3:]
+        ram_flat = observations[:, 72*80*1:]
         coords = ram_flat[:, 0:3].float()
         coord_net = self.coord_emb(coords)
         badge = ram_flat[:, 3:4].float()
