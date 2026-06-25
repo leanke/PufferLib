@@ -31,6 +31,17 @@ cudaError_t cudaStreamQuery(cudaStream_t) { return 0; }
 const char* cudaGetErrorString(cudaError_t) { return "stub"; }
 }
 
+#include "vecenv.c"
+
+static const char* pufferenv_dtype_str(PufferEnvDtype dtype) {
+    switch (dtype) {
+        case PUFFERENV_DTYPE_FLOAT32: return "float32";
+        case PUFFERENV_DTYPE_UINT8:   return "uint8";
+        case PUFFERENV_DTYPE_FLOAT16: return "float16";
+        default:                       return "float32";
+    }
+}
+
 // ============================================================================
 // CPU advantage (same as puff_advantage_row_scalar but plain C++)
 // ============================================================================
@@ -99,8 +110,9 @@ struct VecEnv {
     size_t obs_elem_size;
 };
 
-static std::unique_ptr<VecEnv> create_vec(py::dict args, int gpu = 0) {
+static std::unique_ptr<VecEnv> create_vec(py::dict args, long long vtable_ptr, int gpu = 0) {
     (void)gpu;
+    PufferEnvVTable* vtable = (PufferEnvVTable*)vtable_ptr;
     py::dict vec_kwargs = args["vec"].cast<py::dict>();
     py::dict env_kwargs = args["env"].cast<py::dict>();
     int total_agents = (int)get_config(vec_kwargs, "total_agents");
@@ -111,18 +123,18 @@ static std::unique_ptr<VecEnv> create_vec(py::dict args, int gpu = 0) {
     auto ve = std::make_unique<VecEnv>();
     {
         py::gil_scoped_release no_gil;
-        ve->vec = create_static_vec(total_agents, num_buffers, 0, vec_dict, env_dict);
+        ve->vec = create_static_vec(total_agents, num_buffers, 0, vec_dict, env_dict, vtable);
     }
     ve->total_agents = total_agents;
-    ve->obs_size = get_obs_size();
-    ve->num_atns = get_num_atns();
+    ve->obs_size = vtable->get_obs_size();
+    ve->num_atns = vtable->get_num_atns();
     {
-        int* raw = get_act_sizes();
-        int n = get_num_act_sizes();
+        const int* raw = vtable->get_act_sizes();
+        int n = vtable->get_num_act_sizes();
         ve->act_sizes = std::vector<int>(raw, raw + n);
     }
-    ve->obs_dtype = std::string(get_obs_dtype());
-    ve->obs_elem_size = get_obs_elem_size();
+    ve->obs_dtype = pufferenv_dtype_str(vtable->get_obs_dtype());
+    ve->obs_elem_size = vtable->get_obs_elem_size();
     return ve;
 }
 
@@ -162,11 +174,10 @@ static void vec_close(VecEnv& ve) {
 
 PYBIND11_MODULE(_C, m) {
     m.attr("precision_bytes") = 4;
-    m.attr("env_name") = PUFFER_STRINGIFY(ENV_NAME);
     m.attr("gpu") = 0;
 
     m.def("puff_advantage_cpu", &py_puff_advantage_cpu);
-    m.def("create_vec", &create_vec, py::arg("args"), py::arg("gpu") = 0);
+    m.def("create_vec", &create_vec, py::arg("args"), py::arg("vtable_ptr"), py::arg("gpu") = 0);
 
     py::class_<VecEnv, std::unique_ptr<VecEnv>>(m, "VecEnv")
         .def_readonly("total_agents", &VecEnv::total_agents)

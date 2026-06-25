@@ -26,6 +26,20 @@ except ImportError:
     raise ImportError('Failed to import PufferLib C++ backend. If you have non-default PyTorch, try installing with --no-build-isolation')
 
 from pufferlib import selfplay
+from pufferlib._loader import find_env_plugin, load_env_plugin
+
+_env_libs = {}
+
+def _load_vtable(env_name):
+    path = find_env_plugin(env_name)
+    lib, vtable_ptr = load_env_plugin(path)
+    _env_libs[env_name] = lib
+    return vtable_ptr
+
+def _create_pufferl(backend, args):
+    if backend is _C:
+        return _C.create_pufferl(args, _load_vtable(args['env_name']))
+    return backend.create_pufferl(args)
 
 import rich
 import rich.traceback
@@ -169,9 +183,6 @@ def validate_config(args):
         f'minibatch_size {minibatch_size} > total_agents {total_agents} * horizon {horizon}'
 
 def _resolve_backend(args):
-    compiled_env = getattr(_C, 'env_name', None)
-    assert compiled_env is None or compiled_env == args['env_name'], \
-        f'build.sh was run for {compiled_env}, not {args["env_name"]}'
     if args.get('slowly'):
         from pufferlib.torch_pufferl import PuffeRL
         return PuffeRL
@@ -179,7 +190,7 @@ def _resolve_backend(args):
 
 def _train_worker(args):
     backend = _resolve_backend(args)
-    pufferl = backend.create_pufferl(args)
+    pufferl = _create_pufferl(backend, args)
     args.pop('nccl_id', None)
     while pufferl.global_step < args['train']['total_timesteps']:
         backend.rollouts(pufferl)
@@ -217,7 +228,7 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
     os.makedirs(log_dir, exist_ok=True)
 
     try:
-        pufferl = backend.create_pufferl(args)
+        pufferl = _create_pufferl(backend, args)
     except RuntimeError as e:
         print(f'WARNING: {e}, skipping')
         if result_queue is not None:
@@ -472,7 +483,7 @@ def eval(env_name, args=None, load_path=None):
     args['train']['horizon'] = 1
 
     backend = _resolve_backend(args)
-    pufferl = backend.create_pufferl(args)
+    pufferl = _create_pufferl(backend, args)
 
     # Resolve load path
     load_path = load_path or args.get('load_model_path')
@@ -546,7 +557,7 @@ def match(env_name, policy_a_path, policy_b_path, num_games=4096, args=None, ver
     if enemy_layers:
         args['vec']['frozen_bank_num_layers'] = int(enemy_layers)
 
-    pufferl = backend.create_pufferl(args)
+    pufferl = _create_pufferl(backend, args)
 
     # Per-buffer perm: each env's slot 0 lands in primary's slice [0, half),
     # slot 1 lands in frozen bank's slice [half, agents_per_buffer). The env

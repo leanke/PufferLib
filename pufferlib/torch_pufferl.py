@@ -415,7 +415,9 @@ class PuffeRL:
             os.environ['CUDA_VISIBLE_DEVICES'] = str(local_rank)
 
         args['vec']['num_buffers'] = 1
-        vec = _C.create_vec(args, _C.gpu)
+        from pufferlib._loader import find_env_plugin, load_env_plugin
+        _lib, vtable_ptr = load_env_plugin(find_env_plugin(args['env_name']))
+        vec = _C.create_vec(args, vtable_ptr, _C.gpu)
         policy = load_policy(args, vec)
 
         if 'LOCAL_RANK' in os.environ:

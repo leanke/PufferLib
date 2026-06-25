@@ -231,22 +231,25 @@ inline PrecisionTensor puf_slice(PrecisionTensor& p, int t, int start, int count
 }
 
 struct EnvBuf {
-    OBS_TENSOR_T obs;      // (total_agents, obs_size) - type defined per-env in binding.c
-    FloatTensor actions;   // (total_agents, num_atns)
-    FloatTensor rewards;   // (total_agents,)
-    FloatTensor terminals; // (total_agents,)
-    ByteTensor action_mask; // (total_agents, mask_size); .data=nullptr when env opts out
+    void*          obs_data;     // (total_agents, obs_size) raw GPU pointer
+    int64_t        obs_shape[2]; // {total_agents, obs_size}
+    PufferEnvDtype obs_dtype;    // runtime element type
+    FloatTensor    actions;      // (total_agents, num_atns)
+    FloatTensor    rewards;      // (total_agents,)
+    FloatTensor    terminals;    // (total_agents,)
+    ByteTensor     action_mask;  // (total_agents, mask_size); .data=nullptr when env opts out
 };
 
 StaticVec* create_environments(int num_buffers, int total_agents,
-        const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs, EnvBuf& env) {
-    StaticVec* vec = create_static_vec(total_agents, num_buffers, 1, vec_kwargs, env_kwargs);
-    env.obs = {
-        .data = (decltype(env.obs.data))vec->gpu_observations,
-        .shape = {total_agents, get_obs_size()},
-    };
-    env.actions = { .data = (float*)vec->gpu_actions, .shape = {total_agents, get_num_atns()} };
-    env.rewards = { .data = (float*)vec->gpu_rewards, .shape = {total_agents} };
+        const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs, EnvBuf& env,
+        PufferEnvVTable* vtable) {
+    StaticVec* vec = create_static_vec(total_agents, num_buffers, 1, vec_kwargs, env_kwargs, vtable);
+    env.obs_data     = vec->gpu_observations;
+    env.obs_shape[0] = total_agents;
+    env.obs_shape[1] = vtable->get_obs_size();
+    env.obs_dtype    = vtable->get_obs_dtype();
+    env.actions   = { .data = (float*)vec->gpu_actions,   .shape = {total_agents, vtable->get_num_atns()} };
+    env.rewards   = { .data = (float*)vec->gpu_rewards,   .shape = {total_agents} };
     env.terminals = { .data = (float*)vec->gpu_terminals, .shape = {total_agents} };
     if (vec->action_mask_size > 0) {
         env.action_mask = { .data = vec->gpu_action_mask,
@@ -598,11 +601,24 @@ extern "C" void net_callback_wrapper(void* ctx, int buf, int t) {
     int start = buf * block_size;
     cudaStream_t stream = current_stream;
 
-    // Copy observations, rewards, terminals from GPU env buffers to rollout buffer
-    OBS_TENSOR_T& obs_env = env.obs;
-    int n = block_size * obs_env.shape[1];
+    // Copy observations from GPU env buffers to rollout buffer (runtime dtype dispatch)
+    int64_t obs_cols = env.obs_shape[1];
+    int n = (int)((long)block_size * obs_cols);
     PrecisionTensor obs_dst = puf_slice(rollouts.observations, t, start, block_size);
-    cast_dispatch(obs_dst.data, obs_env.data + (long)start*obs_env.shape[1], n, stream);
+    switch (env.obs_dtype) {
+        case PUFFERENV_DTYPE_FLOAT32:
+            cast_dispatch(obs_dst.data,
+                (const float*)env.obs_data + (long)start * obs_cols, n, stream);
+            break;
+        case PUFFERENV_DTYPE_UINT8:
+            cast_dispatch(obs_dst.data,
+                (const unsigned char*)env.obs_data + (long)start * obs_cols, n, stream);
+            break;
+        case PUFFERENV_DTYPE_FLOAT16:
+            cast_dispatch(obs_dst.data,
+                (const precision_t*)env.obs_data + (long)start * obs_cols, n, stream);
+            break;
+    }
 
     PrecisionTensor rew_dst = puf_slice(rollouts.rewards, t, start, block_size);
     n = block_size;
@@ -1735,9 +1751,9 @@ static void weight_bank_create_for_pufferl(WeightBank* bank, PuffeRL* pufferl,
     int num_buffers = pufferl->hypers.num_buffers;
 
     // Rebuild arch-varying Policy from env metadata already on pufferl.
-    int input_size = pufferl->env.obs.shape[1];
+    int input_size = pufferl->env.obs_shape[1];
     int num_action_heads = pufferl->env.actions.shape[1];
-    int* raw_act_sizes = get_act_sizes();
+    int* raw_act_sizes = (int*)pufferl->vec->vtable->get_act_sizes();
     int act_n = 0;
     for (int i = 0; i < num_action_heads; i++) act_n += raw_act_sizes[i];
     int decoder_output_size = pufferl->is_continuous ? num_action_heads : act_n;
@@ -1906,7 +1922,8 @@ extern "C" int pufferl_num_envs(PuffeRL* pufferl) {
 }
 
 std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
-        const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs) {
+        const std::string& env_name, Dict* vec_kwargs, Dict* env_kwargs,
+        PufferEnvVTable* vtable) {
     auto pufferl = std::make_unique<PuffeRL>();
     pufferl->hypers = hypers;
     pufferl->nccl_comm = nullptr;
@@ -1931,12 +1948,12 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     // Load environment first to get input_size and action info from env
     // Create environments and set up action sizes
     StaticVec* vec = create_environments(hypers.num_buffers, hypers.total_agents,
-        env_name, vec_kwargs, env_kwargs, pufferl->env);
+        env_name, vec_kwargs, env_kwargs, pufferl->env, vtable);
     pufferl->vec = vec;
 
     // Sanity check action space
     int num_action_heads = pufferl->env.actions.shape[1];
-    int* raw_act_sizes = get_act_sizes();  // CPU int32 pointer from env
+    int* raw_act_sizes = (int*)vtable->get_act_sizes();
     int act_n = 0;
     int num_continuous = 0;
     int num_discrete = 0;
@@ -1967,7 +1984,7 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     nvmlDeviceGetHandleByIndex(hypers.gpu_id, &pufferl->nvml_device);
 
     // Create policy
-    int input_size = pufferl->env.obs.shape[1];
+    int input_size = pufferl->env.obs_shape[1];
     int hidden_size = hypers.hidden_size;
     int num_layers = hypers.num_layers;
     bool is_continuous = pufferl->is_continuous;
