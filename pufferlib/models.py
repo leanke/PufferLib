@@ -35,6 +35,55 @@ class DefaultEncoder(nn.Module):
     def forward(self, observations):
         return self.encoder(observations.view(observations.shape[0], -1).float())
 
+class TerrariaEncoder(nn.Module):
+    def __init__(self, obs_size, hidden_size=128):
+        super().__init__()
+        assert obs_size == 512
+        # Tile CNN: (B,378) → (B,2,9,21) → conv → 64-dim
+        # After MaxPool2d(2): 9→4, 21→10; 32*4*10=1280
+        self.tile_cnn = nn.Sequential(
+            nn.Conv2d(2, 16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(1280, 64),
+            nn.ReLU(),
+        )
+        # Scalar: player(6)+world(2)+inv(64)+equip(6)+crafting(20) = 98 → 32-dim
+        self.scalar_mlp = nn.Sequential(
+            nn.Linear(98, 32),
+            nn.ReLU(),
+        )
+        # Enemy set: 8 enemies × 4 features, per-enemy embed → max-pool → 16-dim
+        self.enemy_mlp = nn.Sequential(
+            nn.Linear(4, 16),
+            nn.ReLU(),
+        )
+        # 64+32+16=112 → hidden_size
+        self.out = nn.Sequential(
+            nn.Linear(112, hidden_size),
+            nn.ReLU(),
+        )
+
+    def forward(self, obs):
+        obs = obs.float()
+        B = obs.shape[0]
+        tiles = obs[:, :378].reshape(B, 9, 21, 2).permute(0, 3, 1, 2)
+        tile_feat = self.tile_cnn(tiles)
+        scalar = torch.cat([
+            obs[:, 378:384],   # player  (6)
+            obs[:, 384:386],   # world   (2)
+            obs[:, 386:450],   # inv    (64)
+            obs[:, 450:456],   # equip   (6)
+            obs[:, 488:508],   # crafting (20)
+        ], dim=1)
+        scalar_feat = self.scalar_mlp(scalar)
+        enemies = obs[:, 456:488].reshape(B, 8, 4)
+        enemy_feat = self.enemy_mlp(enemies).max(dim=1)[0]
+        return self.out(torch.cat([tile_feat, scalar_feat, enemy_feat], dim=1))
+
 class MinimalEntityEncoder(nn.Module):
     def __init__(self, obs_size, hidden_size=128):
         super().__init__()
