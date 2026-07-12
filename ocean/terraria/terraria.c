@@ -9,6 +9,7 @@
 //   Q                 Aim up (mine above head without jumping)
 //   Z or Left-click   Mine / Attack
 //   X or Right-click  Place block in selected slot
+//   E                 Interact / use selected item (boss summon, health potion)
 //   1-0               Select hotbar slot 0-9
 //   Mouse wheel       Cycle hotbar slot
 //   Hold C            Show crafting menu
@@ -16,6 +17,9 @@
 //   C + 0             Craft recipe 10
 //   C + Shift + 1-9   Craft recipe 11-19
 //   C + Shift + 0     Craft recipe 20
+//   C + Alt + 1-9, 0  Craft recipe 21-30
+//   C + Ctrl + 1-9, 0 Craft recipe 31-40
+//   C + Ctrl+Shift + 1-3 Craft recipe 41-43 (Merchant potion, Boots, Ring)
 //   H                 Toggle controls overlay
 //   ESC               Quit
 
@@ -25,6 +29,9 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+
+// Must match binding.c's OBS_SIZE (this demo doesn't link against binding.c).
+#define DEMO_OBS_SIZE 543
 
 #define DEMO_TILE_SZ  12
 #define DEMO_WIN_W    800
@@ -47,6 +54,14 @@ static const char* ITEM_NAMES[ITEM_COUNT] = {
     "Iron Helm", "Gold Helm",                                  // 28-29
     "Iron Chest", "Gold Chest",                                // 30-31
     "Iron Legs", "Gold Legs",                                  // 32-33
+    "Boss Summon", "Boss Soul",                                // 34-35
+    "Cobalt Pick", "Cobalt Axe", "Cobalt Sword",                // 36-38
+    "Cobalt Helm", "Cobalt Chest", "Cobalt Legs",              // 39-41
+    "Silver Ore", "Silver Bar",                                // 42-43
+    "Silver Pick", "Silver Axe", "Silver Sword",                // 44-46
+    "Silver Helm", "Silver Chest", "Silver Legs",              // 47-49
+    "Coin", "Health Potion",                                   // 50-51
+    "Boots", "Regen Ring",                                     // 52-53
 };
 
 static const char* ITEM_SHORT[ITEM_COUNT] = {
@@ -61,6 +76,14 @@ static const char* ITEM_SHORT[ITEM_COUNT] = {
     "IrHelm","AuHelm",
     "IrChest","AuChest",
     "IrLegs","AuLegs",
+    "BossHorn","BossSoul",
+    "CoPick","CoAxe","CoSword",
+    "CoHelm","CoChest","CoLegs",
+    "AgOre","AgBar",
+    "AgPick","AgAxe","AgSword",
+    "AgHelm","AgChest","AgLegs",
+    "Coin","HPot",
+    "Boots","Ring",
 };
 
 static const char* RECIPE_NAMES[NUM_RECIPES] = {
@@ -73,6 +96,15 @@ static const char* RECIPE_NAMES[NUM_RECIPES] = {
     "Iron Pick",  "Iron Axe",   "Iron Sword",  "Iron Helm",
     "Gold Pick",  "Gold Sword",
     "Door",       "Bed",
+    "Gold Helm",  "Iron Chest", "Gold Chest",  "Iron Legs",  "Gold Legs",
+    "Boss Summon",
+    "Cobalt Pick", "Cobalt Axe", "Cobalt Sword",
+    "Cobalt Helm", "Cobalt Chest", "Cobalt Legs",
+    "Silver Bar",
+    "Silver Pick", "Silver Axe", "Silver Sword",
+    "Silver Helm", "Silver Chest", "Silver Legs",
+    "Buy Torch x8", "Buy Health Potion",
+    "Boots", "Regen Ring",
 };
 
 static const Color ITEM_COLORS[ITEM_COUNT] = {
@@ -110,19 +142,27 @@ static const Color ITEM_COLORS[ITEM_COUNT] = {
     {240,200,40,255},    // Gold Chest
     {180,170,160,255},   // Iron Legs
     {240,200,40,255},    // Gold Legs
+    {200,50,180,255},    // Boss Summon
+    {230,210,255,255},   // Boss Soul
+    {40,90,220,255},     // Cobalt Pick
+    {40,90,220,255},     // Cobalt Axe
+    {40,90,220,255},     // Cobalt Sword
+    {40,90,220,255},     // Cobalt Helm
+    {40,90,220,255},     // Cobalt Chest
+    {40,90,220,255},     // Cobalt Legs
+    {200,200,210,255},   // Silver Ore
+    {225,225,235,255},   // Silver Bar
+    {210,210,220,255},   // Silver Pick
+    {210,210,220,255},   // Silver Axe
+    {210,210,220,255},   // Silver Sword
+    {210,210,220,255},   // Silver Helm
+    {210,210,220,255},   // Silver Chest
+    {210,210,220,255},   // Silver Legs
+    {255,225,60,255},    // Coin
+    {230,60,120,255},    // Health Potion
+    {150,110,70,255},    // Boots
+    {230,180,220,255},   // Regen Ring
 };
-
-static int can_craft(const Terraria* env, int r) {
-    if (r < 0 || r >= NUM_RECIPES) return 0;
-    const Recipe* rc = &RECIPES[r];
-    if (rc->station == STATION_WORKBENCH && !has_station(env, TILE_WORKBENCH)) return 0;
-    if (rc->station == STATION_FURNACE   && !has_station(env, TILE_FURNACE))   return 0;
-    for (int i = 0; i < rc->n_in; i++) {
-        if (rc->in_item[i] == ITEM_NONE) continue;
-        if (inv_count(&env->inventory, rc->in_item[i]) < rc->in_count[i]) return 0;
-    }
-    return 1;
-}
 
 static void draw_demo(const Terraria* env, int sel, int show_help, int show_craft,
                       int death_flash) {
@@ -135,7 +175,9 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
     if (cam_y > WORLD_H - DEMO_VIEW_TH) cam_y = (float)(WORLD_H - DEMO_VIEW_TH);
 
     BeginDrawing();
-    Color sky = env->is_night ? (Color){8,8,30,255} : (Color){82,148,218,255};
+    Color sky = env->is_blood_moon ? (Color){40,4,8,255}
+              : env->is_night      ? (Color){8,8,30,255}
+                                    : (Color){82,148,218,255};
     ClearBackground(sky);
 
     int tx0 = (int)cam_x;
@@ -175,6 +217,16 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
             DrawRectangle(sx, sy - 4, sw, 3, (Color){80,0,0,200});
             DrawRectangle(sx, sy - 4, hw, 3, (Color){220,40,40,255});
         }
+    }
+
+    if (env->merchant.active) {
+        int sx = (int)((env->merchant.nx - PLAYER_HW - cam_x) * DEMO_TILE_SZ);
+        int sy = (int)((env->merchant.ny - PLAYER_HH - cam_y) * DEMO_TILE_SZ);
+        int sw = (int)(PLAYER_HW * 2.0f * DEMO_TILE_SZ);
+        int sh = (int)(PLAYER_HH * 2.0f * DEMO_TILE_SZ);
+        DrawRectangle(sx, sy, sw, sh, (Color){255, 225, 60, 255});
+        DrawRectangle(sx + 1, sy + 1, sw - 2, sh / 3, (Color){255, 245, 160, 255});
+        DrawText("$", sx + sw / 2 - 2, sy - 10, 10, (Color){255, 225, 60, 255});
     }
 
     {
@@ -218,12 +270,26 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
         }
         DrawText(TextFormat("HP  %d / %d", env->player.php, env->player.pmax_hp),
                  bx + 3, by + 1, 8, WHITE);
-        Color dc = env->is_night ? (Color){110,110,240,255} : (Color){255,215,60,255};
+        Color dc = env->is_blood_moon ? (Color){220,30,30,255}
+                 : env->is_night      ? (Color){110,110,240,255}
+                                       : (Color){255,215,60,255};
         DrawText(env->is_night ? "NIGHT" : "DAY",   6, DEMO_PLAY_H + 20, 9, dc);
         DrawText(TextFormat("T:%d", env->tick),     46, DEMO_PLAY_H + 20, 8, (Color){160,160,160,255});
         DrawText(TextFormat("E:%d", enemies_count(&env->enemies)),
                              90, DEMO_PLAY_H + 20, 8, (Color){160,160,160,255});
-        DrawText("H:help", 6, DEMO_PLAY_H + 32, 8, (Color){120,120,120,255});
+        DrawText(TextFormat("$:%d", inv_count(&env->inventory, ITEM_COIN)),
+                             115, DEMO_PLAY_H + 20, 8, (Color){255,225,60,255});
+        if (env->hardmode) {
+            DrawText("HARDMODE", 6, DEMO_PLAY_H + 32, 9, (Color){230,80,220,255});
+        } else if (env->boss_slot >= 0) {
+            int16_t bhp = env->enemies.ehp[env->boss_slot];
+            DrawText(TextFormat("BOSS HP:%d", bhp), 6, DEMO_PLAY_H + 32, 9,
+                     (Color){230,80,220,255});
+        } else if (env->is_blood_moon) {
+            DrawText("BLOOD MOON", 6, DEMO_PLAY_H + 32, 9, (Color){220,30,30,255});
+        } else {
+            DrawText("H:help", 6, DEMO_PLAY_H + 32, 8, (Color){120,120,120,255});
+        }
     }
 
     // Center: hotbar slots 0-9
@@ -279,11 +345,14 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
             p->equip_chest  ? ITEM_SHORT[p->equip_chest]  : "-",
             p->equip_legs   ? ITEM_SHORT[p->equip_legs]   : "-"),
             ex, ey + 26, 8, (Color){190,190,190,255});
+        DrawText(TextFormat("Acc: %s",
+            p->equip_accessory ? ITEM_SHORT[p->equip_accessory] : "-"),
+            ex, ey + 39, 8, (Color){190,190,190,255});
     }
 
     if (show_craft) {
         int col_w = 250, row_h = 13;
-        int rows  = NUM_RECIPES / 2;  // 10 per column
+        int rows  = (NUM_RECIPES + 1) / 2;  // ceil div: 2 columns fit any count
         int pan_w = col_w * 2 + 10;
         int pan_h = rows * row_h + 24;
         int pan_x = (DEMO_WIN_W - pan_w) / 2;
@@ -300,7 +369,12 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
             if      (r < 9)  key = TextFormat("C+%d",   r + 1);
             else if (r == 9) key = "C+0";
             else if (r < 19) key = TextFormat("C+S+%d", r - 9);
-            else             key = "C+S+0";
+            else if (r == 19) key = "C+S+0";
+            else if (r < 29) key = TextFormat("C+A+%d", r - 19);
+            else if (r == 29) key = "C+A+0";
+            else if (r < 39) key = TextFormat("C+Ctl+%d", r - 29);
+            else if (r == 39) key = "C+Ctl+0";
+            else             key = TextFormat("C+Ctl+S+%d", r - 39);
             int craftable = can_craft(env, r);
             Color rc = craftable ? (Color){110,220,110,255} : (Color){130,130,130,200};
             DrawText(TextFormat("%-7s %s", key, RECIPE_NAMES[r]), rx, ry, 9, rc);
@@ -309,20 +383,24 @@ static void draw_demo(const Terraria* env, int sel, int show_help, int show_craf
 
     if (show_help) {
         int hx = 10, hy = 10;
-        DrawRectangle(hx - 4, hy - 4, 218, 152, (Color){0,0,0,185});
+        DrawRectangle(hx - 4, hy - 4, 218, 207, (Color){0,0,0,185});
         DrawText("CONTROLS  (H to toggle)", hx, hy, 10, YELLOW); hy += 14;
-        DrawText("WASD / Arrows   Move", hx, hy, 9, WHITE); hy += 11;
+        DrawText("WASD / Arrows   Move (sets facing)", hx, hy, 9, WHITE); hy += 11;
         DrawText("W / Space       Jump", hx, hy, 9, WHITE); hy += 11;
-        DrawText("KP 1-9          Focus tile (numpad)", hx, hy, 9, WHITE); hy += 11;
+        DrawText("KP 1-9          Focus tile + facing", hx, hy, 9, WHITE); hy += 11;
         DrawText("Q               Focus up (KP8)", hx, hy, 9, WHITE); hy += 11;
         DrawText("S / Down        Focus down (KP2)", hx, hy, 9, WHITE); hy += 11;
-        DrawText("Z / Left-click  Mine / Attack", hx, hy, 9, WHITE); hy += 11;
-        DrawText("X / Right-click Place block", hx, hy, 9, WHITE); hy += 11;
+        DrawText("Z / Left-click  Mine / Attack (focus)", hx, hy, 9, WHITE); hy += 11;
+        DrawText("X / Right-click Place block (focus)", hx, hy, 9, WHITE); hy += 11;
+        DrawText("E               Interact / use item", hx, hy, 9, WHITE); hy += 11;
         DrawText("1-0             Select slot", hx, hy, 9, WHITE); hy += 11;
         DrawText("Scroll wheel    Cycle slot", hx, hy, 9, WHITE); hy += 11;
         DrawText("Hold C          Crafting menu", hx, hy, 9, WHITE); hy += 11;
         DrawText("C+1..9, C+0     Craft 1-10", hx, hy, 9, WHITE); hy += 11;
         DrawText("C+S+1..9, C+S+0 Craft 11-20", hx, hy, 9, WHITE); hy += 11;
+        DrawText("C+A+1..9, C+A+0 Craft 21-30", hx, hy, 9, WHITE); hy += 11;
+        DrawText("C+Ctl+1..9,+0   Craft 31-40", hx, hy, 9, WHITE); hy += 11;
+        DrawText("C+Ctl+S+1..3    Craft 41-43", hx, hy, 9, WHITE); hy += 11;
         DrawText("ESC             Quit", hx, hy, 9, WHITE);
     }
 
@@ -346,7 +424,7 @@ static void demo_mode(unsigned int seed) {
     memset(&env, 0, sizeof(Terraria));
     env.num_agents   = 1;
     env.rng          = seed;
-    env.observations = (float*)calloc(512, sizeof(float));
+    env.observations = (float*)calloc(DEMO_OBS_SIZE, sizeof(float));
     env.actions      = (float*)calloc(5,   sizeof(float));
     env.rewards      = (float*)calloc(1,   sizeof(float));
     env.terminals    = (float*)calloc(1,   sizeof(float));
@@ -388,6 +466,7 @@ static void demo_mode(unsigned int seed) {
         int tool = 0;
         if (IsMouseButtonDown(0) || IsKeyDown(KEY_Z))       tool = 1;
         else if (IsMouseButtonDown(1) || IsKeyDown(KEY_X))  tool = 2;
+        else if (IsKeyDown(KEY_E))                          tool = 3; // interact/use
         env.actions[1] = (float)tool;
         env.actions[2] = (float)sel;
 
@@ -403,14 +482,16 @@ static void demo_mode(unsigned int seed) {
         int craft      = 0;
         if (IsKeyDown(KEY_C)) {
             int shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+            int alt   = IsKeyDown(KEY_LEFT_ALT)   || IsKeyDown(KEY_RIGHT_ALT);
+            int ctrl  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
             for (int k = 0; k < 9; k++) {
                 if (IsKeyPressed(KEY_ONE + k)) {
-                    craft = shift ? (k + 11) : (k + 1);
+                    craft = (ctrl && shift) ? (k + 41) : ctrl ? (k + 31) : alt ? (k + 21) : shift ? (k + 11) : (k + 1);
                     if (craft > NUM_RECIPES) craft = 0;
                 }
             }
             if (IsKeyPressed(KEY_ZERO)) {
-                craft = shift ? 20 : 10;
+                craft = ctrl ? 40 : alt ? 30 : shift ? 20 : 10;
                 if (craft > NUM_RECIPES) craft = 0;
             }
         }
@@ -449,7 +530,7 @@ static uint32_t xorshift32(uint32_t* s) {
 static void bench_mode(int n_envs, unsigned int seed) {
     printf("Benchmarking %d envs x 10000 steps...\n", n_envs);
     Terraria* envs  = (Terraria*)calloc(n_envs, sizeof(Terraria));
-    float* obs_buf  = (float*)calloc(n_envs * 512, sizeof(float));
+    float* obs_buf  = (float*)calloc(n_envs * DEMO_OBS_SIZE, sizeof(float));
     float* act_buf  = (float*)calloc(n_envs * 5,   sizeof(float));
     float* rew_buf  = (float*)calloc(n_envs,        sizeof(float));
     float* term_buf = (float*)calloc(n_envs,         sizeof(float));
@@ -457,7 +538,7 @@ static void bench_mode(int n_envs, unsigned int seed) {
     for (int e = 0; e < n_envs; e++) {
         envs[e].num_agents   = 1;
         envs[e].rng          = seed + (unsigned int)e;
-        envs[e].observations = obs_buf  + e * 512;
+        envs[e].observations = obs_buf  + e * DEMO_OBS_SIZE;
         envs[e].actions      = act_buf  + e * 5;
         envs[e].rewards      = rew_buf  + e;
         envs[e].terminals    = term_buf + e;
@@ -471,9 +552,9 @@ static void bench_mode(int n_envs, unsigned int seed) {
     for (int step = 0; step < 10000; step++) {
         for (int e = 0; e < n_envs; e++) {
             envs[e].actions[0] = (float)(xorshift32(&rng) % 6);
-            envs[e].actions[1] = (float)(xorshift32(&rng) % 3);
+            envs[e].actions[1] = (float)(xorshift32(&rng) % 4);
             envs[e].actions[2] = (float)(xorshift32(&rng) % 32);
-            envs[e].actions[3] = (float)(xorshift32(&rng) % 21);
+            envs[e].actions[3] = (float)(xorshift32(&rng) % (NUM_RECIPES + 1));
             envs[e].actions[4] = (float)(xorshift32(&rng) % 10);
             c_step(&envs[e]);
         }
@@ -491,7 +572,7 @@ static void headless_mode(unsigned int seed) {
     memset(&env, 0, sizeof(Terraria));
     env.num_agents   = 1;
     env.rng          = seed;
-    env.observations = (float*)calloc(512, sizeof(float));
+    env.observations = (float*)calloc(DEMO_OBS_SIZE, sizeof(float));
     env.actions      = (float*)calloc(5,   sizeof(float));
     env.rewards      = (float*)calloc(1,   sizeof(float));
     env.terminals    = (float*)calloc(1,   sizeof(float));
@@ -504,9 +585,9 @@ static void headless_mode(unsigned int seed) {
     long steps = 0, eps = 0;
     while (steps < 200000) {
         env.actions[0] = (float)(xorshift32(&rng) % 6);
-        env.actions[1] = (float)(xorshift32(&rng) % 3);
+        env.actions[1] = (float)(xorshift32(&rng) % 4);
         env.actions[2] = (float)(xorshift32(&rng) % 32);
-        env.actions[3] = (float)(xorshift32(&rng) % 21);
+        env.actions[3] = (float)(xorshift32(&rng) % (NUM_RECIPES + 1));
         env.actions[4] = (float)(xorshift32(&rng) % 10);
         c_step(&env);
         steps++;

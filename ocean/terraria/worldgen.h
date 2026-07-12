@@ -24,6 +24,11 @@ static float wg_noise1d(uint32_t seed, float xf, int octave) {
     return v0 + t * (v1 - v0);
 }
 
+// Rightmost DESERT_WIDTH columns are the Desert biome — placed at one edge of
+// the map, away from the center-spawned starter house.
+#define DESERT_WIDTH 40
+static inline int is_desert_column(int tx) { return tx >= WORLD_W - DESERT_WIDTH; }
+
 // Surface height at tile column x (y=0 is top of world)
 static int surface_height(uint32_t seed, int x) {
     float h = 0.0f;
@@ -38,6 +43,29 @@ static int surface_height(uint32_t seed, int x) {
     return sh;
 }
 
+// Places `count` circular ore-vein blobs of `ore` into stone tiles. Vein
+// center depth is drawn from [depth_min_frac, depth_max_frac] of WORLD_H,
+// radius from [1, 1+r_range] (r_range=0 gives a fixed 3×3 blob).
+static void place_ore_blobs(Terraria* env, uint32_t seed, TileType ore, int count,
+                             float depth_min_frac, float depth_max_frac, float r_range) {
+    for (int v = 0; v < count; v++) {
+        int cx = (int)(wg_randf(seed, v, 0) * (WORLD_W - 4)) + 2;
+        int cy = (int)(wg_randf(seed, v, 1) * (WORLD_H * (depth_max_frac - depth_min_frac))
+                        + WORLD_H * depth_min_frac);
+        int r  = 1 + (int)(wg_randf(seed, v, 2) * r_range);
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (dx*dx + dy*dy > r*r + 1) continue;
+                int tx = cx + dx, ty2 = cy + dy;
+                if (tx < 0 || tx >= WORLD_W || ty2 < 0 || ty2 >= WORLD_H) continue;
+                if (TILE_TYPE(env->tiles[ty2][tx]) == TILE_STONE) {
+                    TILE_SET_TYPE(env->tiles[ty2][tx], ore);
+                }
+            }
+        }
+    }
+}
+
 // ─── Main world generator ─────────────────────────────────────────────────────
 
 static void generate_world(Terraria* env) {
@@ -48,17 +76,19 @@ static void generate_world(Terraria* env) {
     for (int x = 0; x < WORLD_W; x++)
         surface[x] = surface_height(seed, x);
 
-    // 2. Fill tiles: air → grass→dirt→stone layer
+    // 2. Fill tiles: air → grass→dirt→stone layer (Desert biome columns get
+    // sand instead of grass/dirt near the surface; TILE_SAND/ITEM_SAND were
+    // already wired for mining/inventory, just unused as a biome until now)
     for (int ty = 0; ty < WORLD_H; ty++) {
         for (int tx = 0; tx < WORLD_W; tx++) {
             uint8_t t = 0;
             int sh = surface[tx];
+            int desert = is_desert_column(tx);
             if (ty < sh) {
                 TILE_SET_TYPE(t, TILE_AIR);
-            } else if (ty == sh) {
-                TILE_SET_TYPE(t, TILE_GRASS);
             } else if (ty <= sh + 6) {
-                TILE_SET_TYPE(t, TILE_DIRT);
+                TileType surf_fill = desert ? TILE_SAND : (ty == sh ? TILE_GRASS : TILE_DIRT);
+                TILE_SET_TYPE(t, surf_fill);
             } else {
                 TILE_SET_TYPE(t, TILE_STONE);
             }
@@ -107,54 +137,12 @@ static void generate_world(Terraria* env) {
         }
     }
 
-    // 4. Ore veins (scatter clusters at depth)
-    // Coal: depth > sh+12
-    for (int v = 0; v < 20; v++) {
-        int cx = (int)(wg_randf(seed ^ 0x1111u, v, 0) * (WORLD_W - 4)) + 2;
-        int cy = (int)(wg_randf(seed ^ 0x1111u, v, 1) * (WORLD_H * 0.6f) + WORLD_H * 0.35f);
-        int r  = 1 + (int)(wg_randf(seed ^ 0x1111u, v, 2) * 2.0f);
-        for (int dy = -r; dy <= r; dy++) {
-            for (int dx = -r; dx <= r; dx++) {
-                if (dx*dx + dy*dy > r*r + 1) continue;
-                int tx = cx + dx, ty2 = cy + dy;
-                if (tx < 0 || tx >= WORLD_W || ty2 < 0 || ty2 >= WORLD_H) continue;
-                if (TILE_TYPE(env->tiles[ty2][tx]) == TILE_STONE) {
-                    TILE_SET_TYPE(env->tiles[ty2][tx], TILE_COAL);
-                }
-            }
-        }
-    }
-    // Iron: depth > sh+20
-    for (int v = 0; v < 12; v++) {
-        int cx = (int)(wg_randf(seed ^ 0x2222u, v, 0) * (WORLD_W - 4)) + 2;
-        int cy = (int)(wg_randf(seed ^ 0x2222u, v, 1) * (WORLD_H * 0.45f) + WORLD_H * 0.45f);
-        int r  = 1 + (int)(wg_randf(seed ^ 0x2222u, v, 2) * 1.5f);
-        for (int dy = -r; dy <= r; dy++) {
-            for (int dx = -r; dx <= r; dx++) {
-                if (dx*dx + dy*dy > r*r + 1) continue;
-                int tx = cx + dx, ty2 = cy + dy;
-                if (tx < 0 || tx >= WORLD_W || ty2 < 0 || ty2 >= WORLD_H) continue;
-                if (TILE_TYPE(env->tiles[ty2][tx]) == TILE_STONE) {
-                    TILE_SET_TYPE(env->tiles[ty2][tx], TILE_IRON);
-                }
-            }
-        }
-    }
-    // Gold: depth > sh+35
-    for (int v = 0; v < 6; v++) {
-        int cx = (int)(wg_randf(seed ^ 0x3333u, v, 0) * (WORLD_W - 4)) + 2;
-        int cy = (int)(wg_randf(seed ^ 0x3333u, v, 1) * (WORLD_H * 0.25f) + WORLD_H * 0.65f);
-        int r  = 1;
-        for (int dy = -r; dy <= r; dy++) {
-            for (int dx = -r; dx <= r; dx++) {
-                int tx = cx + dx, ty2 = cy + dy;
-                if (tx < 0 || tx >= WORLD_W || ty2 < 0 || ty2 >= WORLD_H) continue;
-                if (TILE_TYPE(env->tiles[ty2][tx]) == TILE_STONE) {
-                    TILE_SET_TYPE(env->tiles[ty2][tx], TILE_GOLD);
-                }
-            }
-        }
-    }
+    // 4. Ore veins (scatter clusters at depth): center depth drawn from
+    // [depth_min_frac, depth_max_frac] of WORLD_H, radius from [1, 1+r_range].
+    place_ore_blobs(env, seed ^ 0x1111u, TILE_COAL,   20, 0.35f, 0.95f, 2.0f);
+    place_ore_blobs(env, seed ^ 0x2222u, TILE_IRON,   12, 0.45f, 0.90f, 1.5f);
+    place_ore_blobs(env, seed ^ 0x5555u, TILE_SILVER,  8, 0.55f, 0.85f, 1.2f);
+    place_ore_blobs(env, seed ^ 0x3333u, TILE_GOLD,    6, 0.65f, 0.90f, 0.0f);
 
     // 5. Trees on surface
     for (int tx = 2; tx < WORLD_W - 2; tx++) {
@@ -216,6 +204,13 @@ static void generate_world(Terraria* env) {
     // Workbench inside on right side
     TILE_SET_TYPE(env->tiles[sh - 1][sx + 3], TILE_WORKBENCH);
 
+    // Merchant's fixed spot: interior floor, left side (away from the
+    // workbench). Position is set now but `active` stays 0 until the player
+    // crosses the coin threshold (checked each tick in c_step).
+    env->merchant.active = 0;
+    env->merchant.nx = (float)(sx - 2) + 0.5f;
+    env->merchant.ny = (float)(sh - 1) - PLAYER_HH - 0.05f;
+
     // 7. Player spawn: above center surface
     float spawn_x = (float)sx + 0.5f;
     float spawn_y = (float)(sh - 1) - PLAYER_HH - 0.05f;
@@ -235,4 +230,70 @@ static void generate_world(Terraria* env) {
     inv_add(&env->inventory, ITEM_AXE_WOOD,  1);
     env->player.equip_pick = ITEM_PICK_WOOD;
     env->player.equip_axe  = ITEM_AXE_WOOD;
+
+    // 9. Corruption seed patch — small, near the left edge (opposite the
+    // Desert biome and well away from the center-spawned starter house).
+    env->spread_count  = 0;
+    env->spread_cursor = 0;
+    {
+        int ccx = 30;
+        int csh = surface[ccx];
+        for (int dx = -2; dx <= 2; dx++) {
+            int tx = ccx + dx;
+            if (tx < 0 || tx >= WORLD_W) continue;
+            if (TILE_TYPE(env->tiles[csh][tx]) != TILE_GRASS) continue;
+            TILE_SET_TYPE(env->tiles[csh][tx], TILE_CORRUPT_GRASS);
+            if (env->spread_count < MAX_SPREADERS) {
+                env->spread_x[env->spread_count] = (uint16_t)tx;
+                env->spread_y[env->spread_count] = (uint16_t)csh;
+                env->spread_count++;
+            }
+        }
+    }
+}
+
+// Advances corruption spread by a few tiles per call. Walks a round-robin
+// cursor through the active-spreader list (not a full-grid scan) and, for
+// each visited spreader, attempts to convert one directly-adjacent
+// grass/dirt tile. Newly-converted tiles join the list; a dug trench (mined
+// to TILE_AIR) blocks spread for free since only grass/dirt are convertible.
+#define SPREAD_PER_TICK 2
+static void spread_step(Terraria* env) {
+    if (env->spread_count == 0) return;
+    static const int SDX[4] = { 0, 0, -1, 1 };
+    static const int SDY[4] = { -1, 1, 0, 0 };
+
+    for (int n = 0; n < SPREAD_PER_TICK; n++) {
+        uint16_t idx = (uint16_t)(env->spread_cursor % env->spread_count);
+        env->spread_cursor++;
+        int sx = env->spread_x[idx];
+        int sy = env->spread_y[idx];
+
+        uint32_t* rng = &env->rng;
+        *rng ^= *rng << 13; *rng ^= *rng >> 17; *rng ^= *rng << 5;
+        int start_dir = (int)(*rng & 3u);
+
+        for (int k = 0; k < 4; k++) {
+            int d  = (start_dir + k) & 3;
+            int tx = sx + SDX[d];
+            int ty = sy + SDY[d];
+            if (tx < 0 || tx >= WORLD_W || ty < 0 || ty >= WORLD_H) continue;
+            TileType tt = TILE_TYPE(env->tiles[ty][tx]);
+            if (tt != TILE_GRASS && tt != TILE_DIRT) continue;
+
+            TILE_SET_TYPE(env->tiles[ty][tx], TILE_CORRUPT_GRASS);
+            if (env->spread_count < MAX_SPREADERS) {
+                env->spread_x[env->spread_count] = (uint16_t)tx;
+                env->spread_y[env->spread_count] = (uint16_t)ty;
+                env->spread_count++;
+            } else {
+                // List is full: overwrite the slot we're about to revisit
+                // next rather than growing unbounded.
+                uint16_t ovf = (uint16_t)(env->spread_cursor % MAX_SPREADERS);
+                env->spread_x[ovf] = (uint16_t)tx;
+                env->spread_y[ovf] = (uint16_t)ty;
+            }
+            break;
+        }
+    }
 }

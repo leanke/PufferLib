@@ -38,7 +38,7 @@ class DefaultEncoder(nn.Module):
 class TerrariaEncoder(nn.Module):
     def __init__(self, obs_size, hidden_size=128):
         super().__init__()
-        assert obs_size == 512
+        assert obs_size == 543
         # Tile CNN: (B,378) → (B,2,9,21) → conv → 64-dim
         # After MaxPool2d(2): 9→4, 21→10; 32*4*10=1280
         self.tile_cnn = nn.Sequential(
@@ -51,9 +51,9 @@ class TerrariaEncoder(nn.Module):
             nn.Linear(1280, 64),
             nn.ReLU(),
         )
-        # Scalar: player(6)+world(2)+inv(64)+equip(6)+crafting(20) = 98 → 32-dim
+        # Scalar: player(6)+world(2)+inv(64)+equip(6)+crafting(43)+boss(6)+biome(1)+merchant(3)+accessory(1)+bloodmoon(1) = 133 → 32-dim
         self.scalar_mlp = nn.Sequential(
-            nn.Linear(98, 32),
+            nn.Linear(133, 32),
             nn.ReLU(),
         )
         # Enemy set: 8 enemies × 4 features, per-enemy embed → max-pool → 16-dim
@@ -77,7 +77,12 @@ class TerrariaEncoder(nn.Module):
             obs[:, 384:386],   # world   (2)
             obs[:, 386:450],   # inv    (64)
             obs[:, 450:456],   # equip   (6)
-            obs[:, 488:508],   # crafting (20)
+            obs[:, 488:531],   # crafting (43)
+            obs[:, 531:537],   # boss/hardmode (6)
+            obs[:, 537:538],   # biome   (1)
+            obs[:, 538:541],   # merchant (3)
+            obs[:, 541:542],   # accessory (1)
+            obs[:, 542:543],   # blood moon (1)
         ], dim=1)
         scalar_feat = self.scalar_mlp(scalar)
         enemies = obs[:, 456:488].reshape(B, 8, 4)

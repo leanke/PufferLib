@@ -23,6 +23,7 @@ typedef struct {
     uint8_t  equip_helmet;
     uint8_t  equip_chest;
     uint8_t  equip_legs;
+    uint8_t  equip_accessory;
 
     uint8_t  selected_slot;
 } Player;
@@ -32,6 +33,8 @@ typedef enum {
     ENEMY_ZOMBIE,
     ENEMY_BAT,
     ENEMY_SKELETON,
+    ENEMY_BOSS,    // must stay last: try_spawn_enemy's random roll excludes it
+                   // via `% (ENEMY_COUNT - 1)` — bosses only spawn via summon item.
     ENEMY_COUNT
 } EnemyType;
 
@@ -61,6 +64,7 @@ static const EnemyProps ENEMY_PROPS[ENEMY_COUNT] = {
     { 45, 10,  38,  45,  0,   0,   6,  16,  2,   40,  2  }, // ZOMBIE
     { 20,  8,  64,  20,  0,   1,  12,  20,  2,   30,  2  }, // BAT
     { 60, 15,  32,  60,  0,   0,   5,  14,  2,   50,  4  }, // SKELETON
+    { 2000, 30, 40,  0,   0,   0,   0,  30,  3,   60,  50 }, // BOSS
 };
 
 #define MAX_ENEMIES 32
@@ -81,6 +85,10 @@ typedef struct {
     uint8_t eattack_cd[MAX_ENEMIES];
     uint8_t ewander_cd[MAX_ENEMIES]; // ticks until direction change in wander
     int8_t  ewander_dir[MAX_ENEMIES]; // -1 or 1 for wander direction
+
+    // Boss-only fields, kept uniform SoA-wide rather than a separate struct.
+    uint8_t  etelegraph[MAX_ENEMIES];       // 1 = wind-up before a boss hit lands
+    uint16_t etelegraph_timer[MAX_ENEMIES]; // ticks remaining in the wind-up
 } EnemySoA;
 
 static inline int enemies_alloc(EnemySoA* e) {

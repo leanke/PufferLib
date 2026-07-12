@@ -28,6 +28,8 @@ static const Color TILE_COLORS[TILE_COUNT] = {
     {120,  80,  40, 255}, // DOOR_CLOSED
     {160, 120,  60, 200}, // DOOR_OPEN
     {200, 100, 100, 255}, // BED
+    {200, 200, 210, 255}, // SILVER
+    {110,  40, 150, 255}, // CORRUPT_GRASS
 };
 
 static const Color ENEMY_COLORS[ENEMY_COUNT] = {
@@ -35,6 +37,7 @@ static const Color ENEMY_COLORS[ENEMY_COUNT] = {
     { 80,  50,  30, 255}, // ZOMBIE
     { 50,  50, 180, 255}, // BAT
     {200, 200, 200, 255}, // SKELETON
+    {180,  20, 140, 255}, // BOSS
 };
 
 static void c_render(Terraria* env) {

@@ -1,17 +1,28 @@
 #pragma once
 
 // Depends on Terraria struct (included by terraria.h before this file)
-// OBS_SIZE must equal the total below (512)
+// OBS_SIZE must equal the total below (378+6+2+64+6+32+NUM_RECIPES+6+1+3+1+1).
+// Growth convention: append new scalars at the end, never renumber existing
+// indices, and bump OBS_SIZE (binding.c) + the TerrariaEncoder scalar-MLP
+// input size (pufferlib/models.py) together. Note: the "Equipment" block at
+// [450..455] intentionally stays 6 wide — the accessory slot is appended at
+// the end (below) rather than inserted there, to avoid renumbering every
+// index that follows it.
 
-// Layout (512 floats total):
+// Layout (543 floats total, NUM_RECIPES=43):
 //   [  0.. 377] Tile window 21×9 × 2 channels (type_norm, wall_bit) = 378
 //   [378.. 383] Player state (6)
 //   [384.. 385] World state (2)
 //   [386.. 449] Inventory 32 × 2 = 64
-//   [450.. 455] Equipment 6
+//   [450.. 455] Equipment (pick/axe/weapon/helmet/chest/legs) 6
 //   [456.. 487] Nearest 8 enemies × 4 = 32
-//   [488.. 507] Crafting availability 20
-//   [508.. 511] Padding zeros = 4
+//   [488.. 530] Crafting availability NUM_RECIPES = 43
+//   [531.. 536] Boss/hardmode: hardmode flag, boss_active, boss_hp_frac,
+//               boss_telegraph, boss dx, boss dy = 6
+//   [537]       Biome (0=Forest, 1=Desert) = 1
+//   [538.. 540] Merchant: coin count (normalized), merchant dx, merchant dy = 3
+//   [541]       Accessory equip slot = 1
+//   [542]       Blood Moon flag = 1
 
 #define OBS_TILE_W  21
 #define OBS_TILE_H   9
@@ -119,27 +130,45 @@ static void encode_observation(Terraria* env) {
     }
     // idx == 488
 
-    int has_wb = has_station(env, TILE_WORKBENCH);
-    int has_fn = has_station(env, TILE_FURNACE);
     for (int r = 0; r < NUM_RECIPES; r++) {
-        const Recipe* rec = &RECIPES[r];
-        int can = 1;
-        if (rec->station == STATION_WORKBENCH && !has_wb) { can = 0; goto craft_done; }
-        if (rec->station == STATION_FURNACE   && !has_fn) { can = 0; goto craft_done; }
-        for (int j = 0; j < rec->n_in; j++) {
-            if (rec->in_item[j] == ITEM_NONE) continue;
-            if (inv_count(&env->inventory, rec->in_item[j]) < rec->in_count[j]) {
-                can = 0; break;
-            }
-        }
-        craft_done:
-        obs[idx++] = (float)can;
+        obs[idx++] = (float)can_craft(env, r);
     }
-    // idx == 508
+    // idx == 531
 
-    obs[idx++] = 0.0f;
-    obs[idx++] = 0.0f;
-    obs[idx++] = 0.0f;
-    obs[idx++] = 0.0f;
-    // idx == 512
+    obs[idx++] = (float)env->hardmode;
+    if (env->boss_slot >= 0) {
+        int bi = env->boss_slot;
+        int16_t bmhp = ENEMY_PROPS[ENEMY_BOSS].hp;
+        obs[idx++] = 1.0f; // boss_active
+        obs[idx++] = clamp01((float)e->ehp[bi] / (float)(bmhp > 0 ? bmhp : 1));
+        obs[idx++] = (float)e->etelegraph[bi];
+        obs[idx++] = clamp01((e->ex[bi] - p->px) / 20.0f + 0.5f);
+        obs[idx++] = clamp01((e->ey[bi] - p->py) / 20.0f + 0.5f);
+    } else {
+        obs[idx++] = 0.0f; // boss_active
+        obs[idx++] = 0.0f; // boss_hp_frac
+        obs[idx++] = 0.0f; // boss_telegraph
+        obs[idx++] = 0.5f; // boss dx
+        obs[idx++] = 0.5f; // boss dy
+    }
+    // idx == 537
+
+    obs[idx++] = is_desert_column(player_tx) ? 1.0f : 0.0f;
+    // idx == 538
+
+    obs[idx++] = clamp01((float)inv_count(&env->inventory, ITEM_COIN) / (float)(MERCHANT_COIN_THRESHOLD * 2));
+    if (env->merchant.active) {
+        obs[idx++] = clamp01((env->merchant.nx - p->px) / 20.0f + 0.5f);
+        obs[idx++] = clamp01((env->merchant.ny - p->py) / 20.0f + 0.5f);
+    } else {
+        obs[idx++] = 0.5f;
+        obs[idx++] = 0.5f;
+    }
+    // idx == 541
+
+    obs[idx++] = (float)p->equip_accessory / (float)ITEM_COUNT;
+    // idx == 542
+
+    obs[idx++] = (float)env->is_blood_moon;
+    // idx == 543
 }
