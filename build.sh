@@ -20,6 +20,10 @@ set -e
 #   ./build.sh cache_data            # Sweep log cache -> ./cache_data
 #   ./build.sh trailer               # 5.0 trailer -> ./resources/trailer/trailer (also exports diagrams)
 #   ./build.sh all                   # Build all envs native and native float32
+
+# Note: pokered does not support --web or --cu (see the pokered branch below).
+# Its ocean/pokered/pokered.cu is a custom CUDA policy-net encoder, not a
+# GPU-batched env -- it's always compiled in via PUFFER_POKERED, --cu or not.
 #
 # Env is compiled in. Run: ./puffer train|eval|match|sweep [--section.key=value ...]
 
@@ -178,6 +182,76 @@ elif [ "$ENV" = "impulse_wars" ]; then
     # C++ trainer only: game is C (void*/compound literals), not C++17.
     if [ -z "${MODE:-}" ] || [ "$MODE" = "native" ] || [ "$MODE" = "profile" ]; then
         EXTRA_SRC="ocean/impulse_wars/impulse_wars_api.c"
+    fi
+elif [ "$ENV" = "pokered" ]; then
+    SRC_DIR="ocean/$ENV"
+    if [ "$MODE" = "web" ]; then
+        echo "Error: pokered does not support --web (libgambatte's C++ core, the" >&2
+        echo "OpenSSL TLS stream client, and ROM redistribution are all impractical" >&2
+        echo "in a browser build) -- use native or --cpu instead." >&2
+        exit 1
+    fi
+    if [ "$USE_GPU_ENV" = "1" ]; then
+        echo "Error: pokered does not support --cu. Stepping runs on the CPU" >&2
+        echo "(gambatte is not GPU-batchable); ocean/pokered/pokered.cu is a" >&2
+        echo "custom CUDA encoder for the policy net, always compiled in via" >&2
+        echo "PUFFER_POKERED -- drop --cu and build natively instead." >&2
+        exit 1
+    fi
+
+    # gambatte-libretro: Game Boy emulation core
+    GAMBATTE_DIR="${GAMBATTE_DIR:-$(pwd)/vendor/gambatte-libretro}"
+    if [ ! -f "$GAMBATTE_DIR/install/lib/libgambatte.a" ]; then
+        echo "Building libgambatte (static) ..."
+        [ -d "$GAMBATTE_DIR/src" ] || \
+            git clone --depth 1 --branch pufferlib-raw-state \
+                https://github.com/leanke/gambatte-libretro.git "$GAMBATTE_DIR/src"
+        GB_SRC_ROOT="$GAMBATTE_DIR/src"
+        GB_CORE="$GB_SRC_ROOT/libgambatte/src"
+        GB_OBJ_DIR="$GAMBATTE_DIR/build"
+        mkdir -p "$GB_OBJ_DIR" "$GAMBATTE_DIR/install/include" "$GAMBATTE_DIR/install/lib"
+        GB_INC=(-I"$GB_SRC_ROOT/libgambatte/include" -I"$GB_CORE"
+                -I"$GB_SRC_ROOT/libgambatte/libretro"
+                -I"$GB_SRC_ROOT/libgambatte/libretro-common/include"
+                -I"$GB_SRC_ROOT/common")
+        GB_FILES=(
+            bootloader.cpp cpu.cpp gambatte.cpp initstate.cpp interrupter.cpp
+            interruptrequester.cpp gambatte-memory.cpp sound.cpp statesaver.cpp
+            tima.cpp video.cpp video_libretro.cpp
+            mem/cartridge.cpp mem/cartridge_libretro.cpp mem/huc3.cpp
+            mem/memptrs.cpp mem/rtc.cpp
+            sound/channel1.cpp sound/channel2.cpp sound/channel3.cpp
+            sound/channel4.cpp sound/duty_unit.cpp sound/envelope_unit.cpp
+            sound/length_counter.cpp
+            video/ly_counter.cpp video/lyc_irq.cpp video/next_m0_time.cpp
+            video/ppu.cpp video/sprite_mapper.cpp
+        )
+        GB_OBJS=()
+        for f in "${GB_FILES[@]}"; do
+            obj="$GB_OBJ_DIR/$(basename "$f" .cpp).o"
+            ${CXX:-clang++} -std=c++17 -O2 -D__LIBRETRO__ -DHAVE_CSTDINT \
+                "${GB_INC[@]}" -c "$GB_CORE/$f" -o "$obj"
+            GB_OBJS+=("$obj")
+        done
+        GB_LOG_OBJ="$GB_OBJ_DIR/gambatte_log.o"
+        ${CC:-clang} -O2 "${GB_INC[@]}" \
+            -c "$GB_SRC_ROOT/libgambatte/libretro/gambatte_log.c" -o "$GB_LOG_OBJ"
+        GB_OBJS+=("$GB_LOG_OBJ")
+        ar rcs "$GAMBATTE_DIR/install/lib/libgambatte.a" "${GB_OBJS[@]}"
+        cp "$GB_SRC_ROOT/libgambatte/include/"*.h "$GAMBATTE_DIR/install/include/"
+    fi
+    INCLUDES+=(-I"$GAMBATTE_DIR/install/include")
+    LINK_ARCHIVES+=("$GAMBATTE_DIR/install/lib/libgambatte.a")
+
+    # cJSON: minimal JSON dep backing pokered_stream.h.
+    EXTRA_SRC="ocean/pokered/gambatte/gambatte_c.cpp vendor/cJSON.c"
+    EXTRA_CFLAGS+=(-D__LIBRETRO__ -DHAVE_CSTDINT)
+    # OpenSSL: TLS client used by pokered_stream.h.
+    EXTRA_LDFLAGS+=(-lssl -lcrypto)
+    if [ "$PLATFORM" = "Linux" ]; then
+        EXTRA_LDFLAGS+=(-lstdc++)
+    else
+        EXTRA_LDFLAGS+=(-lc++)
     fi
 elif [ "$ENV" = "nethack" ]; then
     SRC_DIR="ocean/$ENV"

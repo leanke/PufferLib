@@ -3192,6 +3192,15 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         }
         // n=0 logs omit env/*; keep last complete-episode snapshot.
         int episodes = dict_get(&new_log, "env/n") > 0;
+        if (!episodes) {
+            // No episode finished this window, no I'm not sorry.
+            for (int i = 0; i < last_log.size; i++) {
+                const char* key = last_log.items[i].key;
+                if (strncmp(key, "env/", 4) == 0 && !dict_find(&new_log, key)) {
+                    dict_set(&new_log, key, last_log.items[i].value);
+                }
+            }
+        }
         if (ctx->artifact_owner) {
             puf_dashboard_print(ini, pufferl, &new_log, (int)pufferl->epoch);
         }
