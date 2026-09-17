@@ -21,6 +21,18 @@ static inline void update_battle_state(BattleState *battle, Emulator *emu) {
   battle->in_battle = (int8_t)read_mem(emu, PKRED_ADDR_IS_IN_BATTLE);
 }
 
+static inline float battle_mon_hp_fraction(Emulator *emu) {
+  uint16_t hp = read_big_endian_16(emu, PKRED_ADDR_BATTLE_MON_HP);
+  uint16_t maxhp = read_big_endian_16(emu, PKRED_ADDR_BATTLE_MON_MAX_HP);
+  return (maxhp > 0) ? (float)hp / (float)maxhp : 0.0f;
+}
+
+static inline float enemy_mon_hp_fraction(Emulator *emu) {
+  uint16_t hp = read_big_endian_16(emu, PKRED_ADDR_ENEMY_MON_HP);
+  uint16_t maxhp = read_big_endian_16(emu, PKRED_ADDR_ENEMY_MON_MAX_HP);
+  return (maxhp > 0) ? (float)hp / (float)maxhp : 0.0f;
+}
+
 static inline float party_hp_fraction(Emulator *emu) {
   uint8_t count = read_mem(emu, PKRED_ADDR_PARTY_COUNT);
   if (count == 0 || count > 6) return 1.0f;

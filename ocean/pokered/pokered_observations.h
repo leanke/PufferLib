@@ -1,6 +1,7 @@
 #ifndef POKERED_OBSERVATIONS_H
 #define POKERED_OBSERVATIONS_H
 
+#include <math.h>
 #include <stddef.h>
 
 static void update_observations(Env *env) {
@@ -42,6 +43,15 @@ static void update_observations(Env *env) {
   obs[o + 3] = (float)core->map_n;
   obs[o + 4] = (float)(read_mem(emu, PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION) / 4);
   obs[o + 5] = (float)core->party_count;
+  obs[o + 6] = env->map_exhaustion_obs_enabled
+      ? fminf(1.0f, (float)env->map_visited_counts[core->map_n] / env->map_exhaustion_norm)
+      : 0.0f;
+
+  bool in_battle = is_battle_active(&env->gstate.battle);
+  obs[o + 7] = in_battle ? 1.0f : 0.0f;
+  obs[o + 8] = in_battle ? (float)read_mem(emu, PKRED_ADDR_PLAYER_SELECTED_MOVE) : 0.0f;
+  obs[o + 9] = in_battle ? battle_mon_hp_fraction(emu) : 0.0f;
+  obs[o + 10] = in_battle ? enemy_mon_hp_fraction(emu) : 0.0f;
 
   PREFETCH_READ(env->visited_coords);
   int v = VISITED_OBS_OFFSET;
@@ -90,8 +100,11 @@ static void update_core_state(Env *env) {
   core->idx = coord_index(core->map_n, core->x, core->y);
   core->badges = read_mem(emu, PKRED_ADDR_OBTAINED_BADGES);
   core->party_count = read_mem(emu, PKRED_ADDR_PARTY_COUNT);
-  for (int i = 0; i < 6; i++)
+  for (int i = 0; i < 6; i++) {
     core->levels[i] = read_mem(emu, PKRED_ADDR_PARTY_MON(i) + offsetof(PkredPartyMon, level));
+    for (int m = 0; m < 4; m++)
+      core->moves[i][m] = read_mem(emu, PKRED_ADDR_PARTY_MON(i) + offsetof(PkredPartyMon, moves) + m);
+  }
   core->pokedex_owned_count = (uint8_t)calc_pokedex_count(emu, PKRED_ADDR_POKEDEX_OWNED, POKEDEX_OWNED_SIZE);
   core->pokedex_seen_count = (uint8_t)calc_pokedex_count(emu, PKRED_ADDR_POKEDEX_SEEN, POKEDEX_SEEN_SIZE);
   core->hp_fraction = party_hp_fraction(emu);

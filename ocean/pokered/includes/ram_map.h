@@ -70,6 +70,12 @@ typedef struct PKRED_PACKED {
 #define PKRED_ADDR_IS_IN_BATTLE      0xD057u /* wIsInBattle: 0=no, 1=wild, 2=trainer, 0xFF(-1)=lost */
 #define PKRED_ADDR_BATTLE_TYPE       0xD05Au /* wBattleType: 0=normal, 1=old man, 2=safari */
 
+#define PKRED_ADDR_BATTLE_MON_HP        0xD015u /* wBattleMonHP: player's active battler current HP, big-endian */
+#define PKRED_ADDR_BATTLE_MON_MAX_HP    0xD023u /* wBattleMonMaxHP: big-endian */
+#define PKRED_ADDR_ENEMY_MON_HP         0xCFE6u /* wEnemyMonHP: opponent's active battler current HP, big-endian */
+#define PKRED_ADDR_ENEMY_MON_MAX_HP     0xCFF4u /* wEnemyMonMaxHP: big-endian */
+#define PKRED_ADDR_PLAYER_SELECTED_MOVE 0xCCDCu /* wPlayerSelectedMove: move id the agent chose this turn */
+
 /* -- Progress / collection -- */
 #define PKRED_ADDR_PLAYER_MONEY   0xD347u /* wPlayerMoney: 3-byte BCD, big-endian digit pairs */
 #define PKRED_ADDR_OBTAINED_BADGES 0xD356u /* wObtainedBadges: 1 bit per gym badge, bit0=Boulder..bit7=Earth */
@@ -80,9 +86,27 @@ typedef struct PKRED_PACKED {
 /* -- Sprites / movement -- */
 #define PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION 0xC109u /* wSpritePlayerStateData1 + 3 */
 
-/* -- Scripted-event overrides (env-specific workarounds) -- */
+/* -- HM move IDs  -- */
+#define PKRED_MOVE_CUT      15u
+#define PKRED_MOVE_FLY      19u
+#define PKRED_MOVE_SURF     57u
+#define PKRED_MOVE_STRENGTH 70u
+#define PKRED_MOVE_FLASH    148u
+
+/* -- Scripted-event overrides  -- */
 #define PKRED_ADDR_VIRIDIAN_CITY_CUR_SCRIPT 0xD5F4u /* wViridianCityCurScript */
 #define PKRED_ADDR_WD72E                    0xD72Eu /* wd72e */
 #define PKRED_WD72E_DISABLE_BATTLES_BIT     4
+#define PKRED_ADDR_ROUTE22_RIVAL_EVENTS         0xD7EBu /* wd7eb */
+#define PKRED_ROUTE22_RIVAL_TRIGGER_1ST_BIT     0 /* EVENT_1ST_ROUTE22_RIVAL_BATTLE */
+#define PKRED_ROUTE22_RIVAL_TRIGGER_2ND_BIT     1 /* EVENT_2ND_ROUTE22_RIVAL_BATTLE */
+#define PKRED_ROUTE22_RIVAL_BEAT_1ST_BIT        5 /* EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE */
+#define PKRED_ROUTE22_RIVAL_BEAT_2ND_BIT        6 /* EVENT_BEAT_ROUTE22_RIVAL_2ND_BATTLE */
+#define PKRED_ROUTE22_RIVAL_WANTS_BATTLE_BIT    7 /* EVENT_ROUTE22_RIVAL_WANTS_BATTLE */
+
+/* -- Missable object visibility -- */
+#define PKRED_ADDR_MISSABLE_OBJECT_FLAGS        0xD5A6u /* wMissableObjectFlags */
+#define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_1      0x22u /* HS_ROUTE_22_RIVAL_1 */
+#define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_2      0x23u /* HS_ROUTE_22_RIVAL_2 */
 
 #endif /* POKERED_RAM_MAP_H */
