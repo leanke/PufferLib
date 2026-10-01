@@ -2,76 +2,72 @@
 #define POKERED_REWARDS_H
 
 #include <string.h>
-#include "includes/milestones.h"
 
-
-static int calc_level_sum(CoreState *core) {
+static int calc_level_sum(const PkSnapshot *core) {
   int sum = 0;
   for (int i = 0; i < 6; i++)
-    sum += core->levels[i];
+    sum += core->party[i].level;
   return sum;
 }
 
 static float EVENT_WEIGHTS[EVENT_COUNT];
 static bool event_weights_ready = false;
 
+#define EVENT_WEIGHT_TRAINER 0.5f
+#define EVENT_WEIGHT_STORY   1.5f
+#define EVENT_WEIGHT_BADGE   3.0f
+
+static const char* BADGE_EVENT_NAMES[] = {
+    "Beat Brock", "Beat Misty", "Beat Lt Surge", "Beat Erika", "Beat Koga",
+    "Beat Sabrina", "Beat Blaine", "Beat Viridian Gym Giovanni",
+    "Beat Champion Rival",
+};
+#define BADGE_EVENT_NAMES_COUNT (sizeof(BADGE_EVENT_NAMES) / sizeof(BADGE_EVENT_NAMES[0]))
+
 static void init_event_weights(void) {
   for (size_t i = 0; i < EVENT_COUNT; ++i) {
-    EVENT_WEIGHTS[i] = strstr(EVENT_LIST[i].name, "Trainer") ? 0.5f : 1.5f;
+    bool is_badge = false;
+    for (size_t j = 0; j < BADGE_EVENT_NAMES_COUNT; ++j) {
+      if (strcmp(EVENT_LIST[i].name, BADGE_EVENT_NAMES[j]) == 0) {
+        is_badge = true;
+        break;
+      }
+    }
+    if (is_badge)
+      EVENT_WEIGHTS[i] = EVENT_WEIGHT_BADGE;
+    else
+      EVENT_WEIGHTS[i] = strstr(EVENT_LIST[i].name, "Trainer") ? EVENT_WEIGHT_TRAINER : EVENT_WEIGHT_STORY;
   }
   event_weights_ready = true;
 }
 
-static float calc_event_weighted_sum(Emulator *emu, uint8_t *prev_events, bool verbose,
-                                      bool capture_milestones, bool *milestone_captured) {
+static float event_weighted_sum(const uint8_t *events) {
   if (!event_weights_ready)
     init_event_weights();
-
   float sum = 0.0f;
-  for (size_t i = 0; i < EVENT_COUNT; ++i) {
-    uint8_t value = read_mem(emu, EVENT_LIST[i].address);
-    uint8_t completed = (value >> EVENT_LIST[i].bit) & 1;
-    if (completed) {
-      if (prev_events && !prev_events[i]) {
-        if (verbose)
-          printf("Event completed: %s\n", EVENT_LIST[i].name);
-        bool already_tried = milestone_captured && milestone_captured[i];
-        if (capture_milestones && EVENT_WEIGHTS[i] != 0.5f && g_milestone_pool.state_size > 0 &&
-            !already_tried) {
-          uint8_t *snapshot = (uint8_t*)malloc(g_milestone_pool.state_size);
-          gambatte_save_state_raw(emu->gb, snapshot);
-          milestone_pool_try_capture((int)i, snapshot);
-          free(snapshot);
-          if (milestone_captured)
-            milestone_captured[i] = true;
-        }
-      }
+  for (size_t i = 0; i < EVENT_COUNT; ++i)
+    if (events[i])
       sum += EVENT_WEIGHTS[i];
-    }
-    if (prev_events)
-      prev_events[i] = completed;
-  }
   return sum;
 }
 
 static float compute_exploration_signal(Env *env) {
   int action = env->prev_action;
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
 
-  if (!is_directional_action(action) || is_battle_active(&env->gstate.battle))
+  if (!is_directional_action(action) || is_battle_active(core))
     return 0.0f;
 
   if (core->x == prev->x && core->y == prev->y && core->map_n == prev->map_n)
     return 0.0f;
 
-  uint32_t idx = core->idx;
+  uint32_t idx = coord_index(core->map_n, core->x, core->y);
   if (idx >= VISITED_COORDS_SIZE)
     return 0.0f;
 
-  bool new_tile = !env->visited_coords[idx];
+  bool new_tile = vbit_test_set(env->visited_coords, idx);
   if (new_tile) {
-    env->visited_coords[idx] = 1;
     env->unique_coords_count++;
     if (env->map_visited_counts[core->map_n] < UINT16_MAX)
       env->map_visited_counts[core->map_n]++;
@@ -81,15 +77,14 @@ static float compute_exploration_signal(Env *env) {
 
   int cell = env->exploration_cell_size;
   uint32_t cell_idx = coord_index(core->map_n, core->x / cell, core->y / cell);
-  if (env->visited_cells[cell_idx])
+  if (!vbit_test_set(env->visited_cells, cell_idx))
     return 0.0f;
-  env->visited_cells[cell_idx] = 1;
   return 1.0f;
 }
 
 static float compute_catching_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
   int delta = (int)core->pokedex_owned_count - (int)prev->pokedex_owned_count;
   if (delta > 0) {
     if (env->verbose)
@@ -100,8 +95,8 @@ static float compute_catching_signal(Env *env) {
 }
 
 static float compute_seeing_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
   int delta = (int)core->pokedex_seen_count - (int)prev->pokedex_seen_count;
   if (delta > 0) {
     if (env->verbose)
@@ -112,23 +107,64 @@ static float compute_seeing_signal(Env *env) {
 }
 
 static float compute_events_signal(Env *env) {
-  bool capture_milestones = env->milestones_enabled && env->event_milestones_enabled;
-  float event_sum = calc_event_weighted_sum(&env->emu, env->prev_events,
-                                            env->verbose, capture_milestones,
-                                            env->milestone_captured);
-  bool triggered = event_sum > env->prev_event_sum;
-  env->prev_event_sum = event_sum;
-  return triggered ? 1.0f : 0.0f;
+  if (!event_weights_ready)
+    init_event_weights();
+  float sum = 0.0f;
+  for (size_t i = 0; i < EVENT_COUNT; ++i) {
+    uint8_t completed = env->cur.events[i];
+    if (completed) {
+      if (!env->prev_events[i]) {
+        if (env->verbose)
+          printf("Event completed: %s\n", EVENT_LIST[i].name);
+        if (EVENT_WEIGHTS[i] != EVENT_WEIGHT_TRAINER && env->be->milestone_event)
+          env->be->milestone_event(env->impl, (int)i);
+      }
+      sum += EVENT_WEIGHTS[i];
+    }
+    env->prev_events[i] = completed;
+  }
+  float delta = sum - env->prev_event_sum;
+  env->prev_event_sum = sum;
+  return delta > 0.0f ? delta : 0.0f;
+}
+
+static const uint8_t POKECENTER_MAPS[] = {
+    0x29,
+    0x3A,
+    0x40,
+    0x44,
+    0x51,
+    0x59,
+    0x85,
+    0x8D,
+    0x9A,
+    0xAB,
+    0xB6,
+};
+#define POKECENTER_MAP_COUNT (sizeof(POKECENTER_MAPS) / sizeof(POKECENTER_MAPS[0]))
+
+static bool POKECENTER_MAP_SET[256];
+static bool pokecenter_map_set_ready = false;
+
+static inline bool is_pokecenter_map(uint8_t map_n) {
+  if (!pokecenter_map_set_ready) {
+    for (size_t i = 0; i < POKECENTER_MAP_COUNT; i++)
+      POKECENTER_MAP_SET[POKECENTER_MAPS[i]] = true;
+    pokecenter_map_set_ready = true;
+  }
+  return POKECENTER_MAP_SET[map_n];
 }
 
 static float compute_healing_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
   if (core->party_count != prev->party_count || core->party_count == 0)
     return 0.0f;
   if (env->party_wiped)
     return 0.0f;
   if (calc_level_sum(core) != calc_level_sum(prev))
+    return 0.0f;
+  if (is_pokecenter_map(core->map_n) && core->hp_fraction >= 0.999f)
     return 0.0f;
 
   float delta = core->hp_fraction - prev->hp_fraction;
@@ -140,31 +176,9 @@ static float compute_healing_signal(Env *env) {
   return 0.0f;
 }
 
-static const uint8_t POKECENTER_MAPS[] = {
-    0x29, // Viridian Pokecenter
-    0x3A, // Pewter Pokecenter
-    0x40, // Cerulean Pokecenter
-    0x44, // Mt Moon Pokecenter
-    0x51, // Rock Tunnel Pokecenter
-    0x59, // Vermilion Pokecenter
-    0x85, // Celadon Pokecenter
-    0x8D, // Lavender Pokecenter
-    0x9A, // Fuchsia Pokecenter
-    0xAB, // Cinnabar Pokecenter
-    0xB6, // Saffron Pokecenter
-};
-#define POKECENTER_MAP_COUNT (sizeof(POKECENTER_MAPS) / sizeof(POKECENTER_MAPS[0]))
-
-static bool is_pokecenter_map(uint8_t map_n) {
-  for (size_t i = 0; i < POKECENTER_MAP_COUNT; i++)
-    if (POKECENTER_MAPS[i] == map_n)
-      return true;
-  return false;
-}
-
 static float compute_pokecenter_heal_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
   if (core->party_count != prev->party_count || core->party_count == 0)
     return 0.0f;
   if (env->party_wiped)
@@ -180,32 +194,45 @@ static float compute_pokecenter_heal_signal(Env *env) {
 }
 
 static float compute_pokecenter_visit_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
-  if (core->map_n == prev->map_n)
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
+
+  if (!is_pokecenter_map(core->map_n)) {
+    env->pokecenter_visit_step = -1;
     return 0.0f;
-  if (!is_pokecenter_map(core->map_n))
+  }
+
+  if (core->map_n != prev->map_n || env->pokecenter_visit_step < 0)
+    env->pokecenter_visit_step = 0;
+  else
+    env->pokecenter_visit_step++;
+
+  if (env->pokecenter_visit_step >= env->pokecenter_visit_steps)
     return 0.0f;
   if (core->party_count == 0 || core->hp_fraction >= 0.999f)
     return 0.0f;
 
   if (env->verbose)
-    printf("Visited a Pokemon Center while hurt (HP fraction %.3f)!\n", core->hp_fraction);
+    printf("Visited a Pokemon Center while hurt (HP fraction %.3f, step %d)!\n",
+           core->hp_fraction, env->pokecenter_visit_step);
   return 1.0f;
 }
 
 static float compute_leveling_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
   if (core->party_count != prev->party_count)
     return 0.0f;
 
   int delta = 0;
-  for (int i = 0; i < core->party_count; i++)
-    delta += (int)core->levels[i] - (int)prev->levels[i];
+  for (int i = 0; i < core->party_count; i++) {
+    if (prev->party[i].level == 0)
+      continue;
+    delta += (int)core->party[i].level - (int)prev->party[i].level;
+  }
 
   if (delta > 0) {
-    int level_sum = calc_level_sum(&env->gstate.core);
+    int level_sum = calc_level_sum(core);
     if (env->verbose)
       printf("Leveled up! Party levels: %d -> %d\n", calc_level_sum(prev), level_sum);
     if (level_sum < 15)
@@ -220,8 +247,13 @@ static const uint8_t HM_MOVE_IDS[5] = {
     PKRED_MOVE_CUT, PKRED_MOVE_FLY, PKRED_MOVE_SURF, PKRED_MOVE_STRENGTH, PKRED_MOVE_FLASH,
 };
 
+#define HM_REWARDED_MASK_ALL 0x1F
+
 static float compute_hm_learned_signal(Env *env) {
-  CoreState *core = &env->gstate.core;
+  if (env->hm_rewarded_mask == HM_REWARDED_MASK_ALL)
+    return 0.0f;
+
+  const PkSnapshot *core = &env->cur;
   bool learned_any = false;
   for (int h = 0; h < 5; h++) {
     if (env->hm_rewarded_mask & (1 << h))
@@ -229,7 +261,7 @@ static float compute_hm_learned_signal(Env *env) {
     for (int i = 0; i < core->party_count && i < 6; i++) {
       bool has_move = false;
       for (int m = 0; m < 4; m++) {
-        if (core->moves[i][m] == HM_MOVE_IDS[h]) { has_move = true; break; }
+        if (core->party[i].moves[m] == HM_MOVE_IDS[h]) { has_move = true; break; }
       }
       if (has_move) {
         env->hm_rewarded_mask |= (1 << h);
@@ -243,29 +275,26 @@ static float compute_hm_learned_signal(Env *env) {
   return learned_any ? 1.0f : 0.0f;
 }
 
-static void capture_map_milestones(Env *env) {
-  CoreState *core = &env->gstate.core;
-  CoreState *prev = &env->gstate.prev_core;
-  if (!env->milestones_enabled || core->map_n == prev->map_n || g_milestone_pool.state_size == 0)
-    return;
+static int ball_count(const PkSnapshot *s) {
+  static const uint8_t BALL_IDS[] = {1, 2, 3, 4, 8};
+  int n = 0;
+  for (size_t i = 0; i < sizeof(BALL_IDS); i++)
+    n += s->bag_qty[BALL_IDS[i]];
+  return n;
+}
 
-  for (size_t i = 0; i < MAP_MILESTONE_COUNT; i++) {
-    if (core->map_n != MAP_MILESTONES[i].map_id)
-      continue;
-    if (MAP_MILESTONES[i].is_town && !env->town_milestones_enabled)
-      continue;
-    int slot = MAP_MILESTONE_SLOT_BASE + (int)i;
-    if (env->milestone_captured && env->milestone_captured[slot])
-      continue;
-    if (env->verbose)
-      printf("Milestone reached: %s\n", MAP_MILESTONES[i].name);
-    uint8_t *snapshot = (uint8_t*)malloc(g_milestone_pool.state_size);
-    gambatte_save_state_raw(env->emu.gb, snapshot);
-    milestone_pool_try_capture(slot, snapshot);
-    free(snapshot);
-    if (env->milestone_captured)
-      env->milestone_captured[slot] = true;
-  }
+static float compute_run_signal(Env *env) {
+  const PkSnapshot *core = &env->cur;
+  const PkSnapshot *prev = &env->prev;
+  if (prev->in_battle != 1 || core->in_battle != 0)
+    return 0.0f;
+  if (prev->enemy_mon.hp == 0 || core->hp_fraction <= 0.0f)
+    return 0.0f;
+  if (core->party_count != prev->party_count || ball_count(core) < ball_count(prev))
+    return 0.0f;
+  if (env->verbose)
+    printf("Ran from a wild battle!\n");
+  return 1.0f;
 }
 
 static float compute_exploration_anneal_scale(Env *env) {
@@ -277,17 +306,14 @@ static float compute_exploration_anneal_scale(Env *env) {
   return 1.0f - fminf(fmaxf(frac, 0.0f), 1.0f);
 }
 
-
-
 static float calculate_rewards(Env *env) {
-  PREFETCH_READ(&env->gstate);
-  PREFETCH_READ(env->visited_coords);
-
-  update_core_state(env);
-  update_battle_state(&env->gstate.battle, &env->emu);
-  capture_map_milestones(env);
+  env->be->snapshot(env->impl, &env->cur);
+  if (env->be->milestone_map)
+    env->be->milestone_map(env->impl, env->cur.map_n, env->prev.map_n);
 
   float weight_exploration = env->weight_exploration * compute_exploration_anneal_scale(env);
+  if (env->exploration_death_scaling_enabled)
+    weight_exploration /= (float)(env->blackout_count + 1);
 
   float s_explore = compute_exploration_signal(env);
   float s_catching = compute_catching_signal(env);
@@ -298,6 +324,7 @@ static float calculate_rewards(Env *env) {
   float s_hm_learned = compute_hm_learned_signal(env);
   float s_pokecenter = compute_pokecenter_heal_signal(env);
   float s_pokecenter_visit = compute_pokecenter_visit_signal(env);
+  float s_run = compute_run_signal(env);
 
   env->stats.total_explore_signal += s_explore * weight_exploration;
   env->stats.total_catching_signal += s_catching * env->weight_catching;
@@ -308,15 +335,17 @@ static float calculate_rewards(Env *env) {
   env->stats.total_hm_learned_signal += s_hm_learned * env->weight_hm_learned;
   env->stats.total_pokecenter_signal += s_pokecenter * env->weight_pokecenter;
   env->stats.total_pokecenter_visit_signal += s_pokecenter_visit * env->weight_pokecenter_visit;
+  env->stats.total_run_signal -= s_run * env->weight_run;
 
-  env->gstate.prev_core = env->gstate.core;
+  env->prev = env->cur;
 
   return weight_exploration * s_explore + env->weight_catching * s_catching +
          env->weight_seeing * s_seeing + env->weight_events * s_events +
          env->weight_leveling * s_leveling + env->weight_healing * s_healing +
          env->weight_hm_learned * s_hm_learned + env->weight_pokecenter * s_pokecenter +
          env->weight_pokecenter_visit * s_pokecenter_visit -
+         env->weight_run * s_run -
          env->weight_time;
 }
 
-#endif /* POKERED_REWARDS_H */
+#endif

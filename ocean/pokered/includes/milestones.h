@@ -16,7 +16,6 @@
                  "MILESTONE_CAPACITY must cover every EVENT_LIST entry");
 #endif
 
-
 typedef struct {
     uint8_t map_id;
     const char *name;
@@ -29,7 +28,7 @@ typedef struct {
 } TownMap;
 
 static const TownMap TOWN_MAPS[] = {
-   // {0x00, "Pallet Town"},
+
     {0x01, "Viridian City"},
     {0x02, "Pewter City"},
     {0x03, "Cerulean City"},
@@ -44,8 +43,7 @@ static const TownMap TOWN_MAPS[] = {
 #define TOWN_MAP_COUNT (sizeof(TOWN_MAPS) / sizeof(TownMap))
 
 static const MapMilestone MAP_MILESTONES[] = {
-   // {0x33, "Reached Viridian Forest", false},
-   // {0x00, "Reached Pallet Town", true},
+
     {0x01, "Reached Viridian City", true},
     {0x02, "Reached Pewter City", true},
     {0x03, "Reached Cerulean City", true},
@@ -58,7 +56,7 @@ static const MapMilestone MAP_MILESTONES[] = {
     {0x0A, "Reached Saffron City", true},
 };
 #define MAP_MILESTONE_COUNT (sizeof(MAP_MILESTONES) / sizeof(MapMilestone))
-#define MAP_MILESTONE_SLOT_BASE 500  // must be > EVENT_COUNT (~496); see static_assert below
+#define MAP_MILESTONE_SLOT_BASE 500
 #if __STDC_VERSION__ >= 201112L
    static_assert(sizeof(EVENT_LIST) / sizeof(Event) <= MAP_MILESTONE_SLOT_BASE,
                  "MAP_MILESTONE_SLOT_BASE must sit above every EVENT_LIST index");
@@ -67,7 +65,7 @@ static const MapMilestone MAP_MILESTONES[] = {
 #endif
 
 typedef struct {
-    uint8_t *state_buf;   // g_gb_pool.state_size bytes; NULL until filled
+    uint8_t *state_buf;
     bool filled;
 } MilestoneSlot;
 
@@ -85,7 +83,6 @@ static MilestonePool g_milestone_pool = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-// Called once state_size is known (after gb_pool_init). Idempotent.
 static inline void milestone_pool_set_state_size(size_t state_size) {
     g_milestone_pool.state_size = state_size;
 }
@@ -95,7 +92,7 @@ static inline void milestone_pool_try_capture(int event_idx, const uint8_t *stat
         return;
 
     MilestoneSlot *slot = &g_milestone_pool.slots[event_idx];
-    if (slot->filled)  // fast unlocked check; a stale false just costs one redundant capture race
+    if (slot->filled)
         return;
 
     pthread_mutex_lock(&g_milestone_pool.lock);
@@ -133,4 +130,4 @@ static inline void milestone_pool_free(void) {
     pthread_mutex_unlock(&g_milestone_pool.lock);
 }
 
-#endif /* POKERED_MILESTONES_H */
+#endif

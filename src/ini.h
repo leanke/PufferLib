@@ -501,6 +501,40 @@ static void puf_ini_load_file(Ini* ini, const char* path) {
     fclose(fp);
 }
 
+static void puf_ini_apply_backend_presets(Ini* ini) {
+    const char* backend = NULL;
+    for (int i = 0; i < ini->num_sections; i++) {
+        if (strcmp(ini->sections[i].name, "env") != 0) continue;
+        DictItem* bk = dict_find(&ini->sections[i], "backend");
+        if (bk && bk->str && bk->str[0]) backend = bk->str;
+    }
+    if (!backend) return;
+
+    char prefix[PUF_DICT_MAX_KEY];
+    snprintf(prefix, sizeof(prefix), "%s.", backend);
+    size_t plen = strlen(prefix);
+    int n = ini->num_sections;  // presets only; sections added below are plain
+    for (int i = 0; i < n; i++) {
+        if (strncmp(ini->sections[i].name, prefix, plen) != 0) continue;
+        char* target = dict_strdup(ini->sections[i].name + plen);
+        Dict* dst = puf_ini_section(ini, target, 1);  // may realloc sections
+        Dict* src = &ini->sections[i];
+        for (int k = 0; k < src->size; k++) {
+            DictItem* s = &src->items[k];
+            DictItem* d = dict_item(dst, s->key);
+            dict_item_clear(d);
+            d->value = s->value;
+            d->len = s->len;
+            if (s->str) d->str = dict_strdup(s->str);
+            if (s->values) {
+                d->values = (double*)calloc((size_t)s->len, sizeof(double));
+                memcpy(d->values, s->values, (size_t)s->len * sizeof(double));
+            }
+        }
+        free(target);
+    }
+}
+
 static inline void puf_ini_load_env(Ini* ini, const char* env_name,
         int argc, char** argv) {
     puf_ini_load_file(ini, "config/default.ini");
@@ -523,6 +557,11 @@ static inline void puf_ini_load_env(Ini* ini, const char* env_name,
         }
     }
 #endif
+    for (int i = 0; i < argc; i++) {
+        puf_ini_apply_arg(ini, "base", argv[i], i);
+    }
+    puf_ini_apply_backend_presets(ini);
+    // Re-apply so explicit command-line overrides win over the preset.
     for (int i = 0; i < argc; i++) {
         puf_ini_apply_arg(ini, "base", argv[i], i);
     }

@@ -320,11 +320,7 @@ static const Event EVENT_LIST[] = {
     {0xD7E9, 7, "Beat Route 21 Trainer 6"},
     {0xD7EA, 0, "Beat Route 21 Trainer 7"},
     {0xD7EA, 1, "Beat Route 21 Trainer 8"},
-//    {0xD7EB, 0, "1St Route22 Rival Battle"},
-//    {0xD7EB, 1, "2Nd Route22 Rival Battle"},
-//    {0xD7EB, 5, "Beat Route22 Rival 1St Battle"},
-//    {0xD7EB, 6, "Beat Route22 Rival 2Nd Battle"},
-//    {0xD7EB, 7, "Route22 Rival Wants Battle"},
+
     {0xD7ED, 0, "Passed Cascadebadge Check"},
     {0xD7ED, 1, "Passed Thunderbadge Check"},
     {0xD7ED, 2, "Passed Rainbowbadge Check"},
@@ -515,5 +511,4 @@ static const Event EVENT_LIST[] = {
 };
 static const size_t EVENT_COUNT = sizeof(EVENT_LIST) / sizeof(Event);
 
-
-#endif // EVENTS_H
+#endif

@@ -17,7 +17,7 @@ void puf_normal_init(Prec* dst, float std, ulong seed, cudaStream_t stream) {
     cudaFree(buf);
 }
 
-#ifdef PUFFER_POKERED
+#if defined(PUFFER_POKERED)
 #include "../ocean/pokered/pokered.cu"
 #endif
 #ifdef PUFFER_NMMO3
@@ -57,7 +57,7 @@ __device__ static const float OSRS_ITEM_OBS_TABLE_DEV
 
 // Override encoder vtable when this env has a custom net. No-op otherwise.
 static void create_custom_encoder(Encoder* enc) {
-#ifdef PUFFER_POKERED
+#if defined(PUFFER_POKERED)
     create_pokered_conv_encoder(enc);
 #elif defined(PUFFER_NETHACK)
     create_nethack_encoder(enc);
@@ -89,7 +89,9 @@ static void create_custom_encoder(Encoder* enc) {
 }
 
 static void create_custom_decoder(Decoder* dec) {
-#ifdef PUFFER_NETHACK
+#if (defined(PUFFER_POKERED)) && defined(POKERED_DUAL_HEAD)
+    create_pokered_decoder(dec);
+#elif defined(PUFFER_NETHACK)
     create_nethack_decoder(dec);
 #else
     (void)dec;

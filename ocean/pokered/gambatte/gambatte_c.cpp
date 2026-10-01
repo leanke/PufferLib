@@ -26,7 +26,8 @@ public:
 };
 
 static constexpr unsigned SAMPLES_PER_FRAME = 35112;
-static constexpr unsigned SAMPLES_PER_RUN   = 2064;
+
+static constexpr unsigned SAMPLES_PER_RUN   = SAMPLES_PER_FRAME;
 static constexpr unsigned SOUND_BUF_SZ      = SAMPLES_PER_RUN + 2064;
 
 struct GBState {
@@ -75,6 +76,15 @@ void gambatte_run_frame(gambatte_handle gb, uint32_t *videoBuf) {
 
 void gambatte_set_input(gambatte_handle gb, unsigned buttons) {
     if (gb) as_state(gb)->input.buttons_ = buttons;
+}
+
+void gambatte_set_audio_enabled(gambatte_handle gb, bool enabled) {
+    if (gb) as_state(gb)->gb.setSoundSynthesisEnabled(enabled);
+}
+
+const uint8_t *gambatte_rambank1_ptr(gambatte_handle gb) {
+    if (!gb) return nullptr;
+    return static_cast<const uint8_t *>(as_state(gb)->gb.rambank1_ptr());
 }
 
 uint8_t gambatte_read_mem(gambatte_handle gb, uint16_t addr) {

@@ -57,8 +57,8 @@ constexpr cublasComputeType_t CUBLAS_COMPUTE = CUBLAS_COMPUTE_32F;
 
 #define PUF_MAX_DIMS 8
 #define BLOCK_SIZE 256
-int grid_size(int N) {
-    return (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
+int grid_size(int64_t N) {
+    return (int)((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
 }
 
 // Compile vs a single env: -DENV_HEADER=ocean/<env>/<env>.h or .cu (--cu)
@@ -1408,30 +1408,31 @@ static Float slice_rows(Float p, int off, int n) {
 // Transpose (A, B, C) → (B, A, C). Sequential, coalesced on dest rows.
 // Two types: actions are float32 (large discrete IDs); everything else is Prec.
 __global__ void transpose_102(precision_t* dst, const precision_t* src,
-        int A, int B, int C) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = A * B * C;
+        int64_t A, int64_t B, int64_t C) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = A * B * C;
     if (idx >= total) {
         return;
     }
-    int a = idx / (B * C);
-    int rem = idx % (B * C);
-    int b = rem / C;
-    int c = rem % C;
+    int64_t a = idx / (B * C);
+    int64_t rem = idx % (B * C);
+    int64_t b = rem / C;
+    int64_t c = rem % C;
     dst[b * A * C + a * C + c] = src[idx];
 }
 
 #if !defined(PRECISION_FLOAT)
-__global__ void transpose_102(float* dst, const float* src, int A, int B, int C) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = A * B * C;
+__global__ void transpose_102(float* dst, const float* src,
+        int64_t A, int64_t B, int64_t C) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t total = A * B * C;
     if (idx >= total) {
         return;
     }
-    int a = idx / (B * C);
-    int rem = idx % (B * C);
-    int b = rem / C;
-    int c = rem % C;
+    int64_t a = idx / (B * C);
+    int64_t rem = idx % (B * C);
+    int64_t b = rem / C;
+    int64_t c = rem % C;
     dst[b * A * C + a * C + c] = src[idx];
 }
 #endif
@@ -1465,11 +1466,11 @@ static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
     unsigned long long* st = pufferl->profile.stamps + slot * NUM_TE;
     puf_stamp<<<1, 1, 0, stream>>>(st + TE_S);
 
-    int T = src.observations.shape[0];
-    int B = src.observations.shape[1];
-    int obs_size = (int)src.observations.shape[2];
-    int num_atns = (int)src.actions.shape[2];
-    int mask_c = src.action_mask.shape[2];
+    int64_t T = src.observations.shape[0];
+    int64_t B = src.observations.shape[1];
+    int64_t obs_size = src.observations.shape[2];
+    int64_t num_atns = src.actions.shape[2];
+    int64_t mask_c = src.action_mask.shape[2];
     transpose_102<<<grid_size(T * B * obs_size), BLOCK_SIZE, 0, stream>>>(
         rollouts->observations.data, src.observations.data, T, B, obs_size);
     transpose_102<<<grid_size(T * B * num_atns), BLOCK_SIZE, 0, stream>>>(

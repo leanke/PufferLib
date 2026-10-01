@@ -44,10 +44,12 @@ typedef uint32_t color_t;
     if (LIKELY(_gb != NULL)) {                                     \
         gambatte_set_input(_gb, (keys) & 0xFF);                    \
         for (int _i = 0; _i < _press; _i++)                       \
-            gambatte_run_frame(_gb, (vbuf));                       \
+            gambatte_run_frame(_gb,                                \
+                (g_frame_render_skip_enabled && _i != _total - 1) ? NULL : (vbuf)); \
         gambatte_set_input(_gb, 0);                                \
         for (int _i = _press; _i < _total; _i++)                  \
-            gambatte_run_frame(_gb, (vbuf));                       \
+            gambatte_run_frame(_gb,                                \
+                (g_frame_render_skip_enabled && _i != _total - 1) ? NULL : (vbuf)); \
     }                                                              \
 } while(0)
 
@@ -121,6 +123,18 @@ typedef struct {
 static void gb_init_core(Emulator *env, const char *rom_path);
 static inline bool c_save_state_file(Emulator *env, const char *path);
 
+static bool g_audio_enabled = false;
+
+static inline void gb_set_audio_enabled(bool enabled) {
+  g_audio_enabled = enabled;
+}
+
+static bool g_frame_render_skip_enabled = false;
+
+static inline void gb_set_frame_render_skip_enabled(bool enabled) {
+  g_frame_render_skip_enabled = enabled;
+}
+
 static inline uint32_t action_to_key(int action) {
   if (action < 0 || action >= GB_ACTION_COUNT)
     return 0;
@@ -129,6 +143,10 @@ static inline uint32_t action_to_key(int action) {
 
 static inline uint8_t read_mem(Emulator *env, uint16_t addr) {
   return (env && env->gb) ? gambatte_read_mem(env->gb, addr) : 0;
+}
+
+static inline const uint8_t *gb_rambank1_base(Emulator *env) {
+  return (env && env->gb) ? gambatte_rambank1_ptr(env->gb) : NULL;
 }
 
 static inline uint32_t read_bcd(Emulator *env, uint16_t addr) {
@@ -201,6 +219,8 @@ static void gb_init_core(Emulator *env, const char *rom_path) {
     }
     free(buf);
   }
+
+  gambatte_set_audio_enabled(env->gb, g_audio_enabled);
 
   env->video_buffer =
       (color_t *)calloc(GB_VIDEO_PITCH * GB_SCREEN_HEIGHT, sizeof(color_t));

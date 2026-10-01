@@ -2,112 +2,162 @@
 #define POKERED_OBSERVATIONS_H
 
 #include <math.h>
-#include <stddef.h>
+#include <string.h>
+
+static inline bool is_battle_active(const PkSnapshot *s) {
+  return s->in_battle == 1 || s->in_battle == 2;
+}
+
+static inline float mon_hp_fraction(const PkMon *m) {
+  return (m->max_hp > 0) ? (float)m->hp / (float)m->max_hp : 0.0f;
+}
 
 static void update_observations(Env *env) {
-  if (!env || !env->emu.video_buffer || !env->agents[0].observations)
+  if (!env || !env->agents[0].observations)
     return;
 
-  PREFETCH_READ(env->emu.video_buffer);
-  PREFETCH_WRITE(env->agents[0].observations);
-  const color_t *vbuf = env->emu.video_buffer;
   obs_t *obs = env->agents[0].observations;
-  CoreState *core = &env->gstate.core;
-  Emulator *emu = &env->emu;
+  const PkSnapshot *s = &env->cur;
 
-  for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
-    for (int sx = 0; sx < SCALED_WIDTH; sx++) {
-      int src_y = sy * 2;
-      int src_x = sx * 2;
+  if (!env->screen_obs_enabled)
+    memset(obs, 0, SCALED_PIXELS * sizeof(obs_t));
+  else
+    env->be->screen(env->impl, obs);
 
-      uint32_t gray_sum = 0;
-      for (int dy = 0; dy < 2; dy++) {
-        for (int dx = 0; dx < 2; dx++) {
-          int src_idx = (src_y + dy) * GB_VIDEO_PITCH + (src_x + dx);
-          color_t pixel = vbuf[src_idx];
-          uint32_t r = (pixel >> 16) & 0xFF;
-          uint32_t g = (pixel >> 8) & 0xFF;
-          uint32_t b = pixel & 0xFF;
-          gray_sum += r * 77 + g * 150 + b * 29;
-        }
+  {
+    int mo = VISITED_MASK_OFFSET;
+    for (int by = 0; by < BLOCKS_TALL; by++) {
+      int wcy = (int)s->y + (by - PLAYER_BLOCK_ROW);
+      for (int bx = 0; bx < BLOCKS_WIDE; bx++) {
+        int wcx = (int)s->x + (bx - PLAYER_BLOCK_COL);
+        float visited = 0.0f;
+        if (wcx >= 0 && wcx < MAX_X && wcy >= 0 && wcy < MAX_Y)
+          visited = vbit_get(env->visited_coords, coord_index(s->map_n, (uint8_t)wcx, (uint8_t)wcy)) ? 1.0f : 0.0f;
+        obs[mo + by * BLOCKS_WIDE + bx] = visited;
       }
-      obs[sy * SCALED_WIDTH + sx] = (float)(gray_sum >> 10);
     }
   }
 
-  int o = SCALED_PIXELS;
+  bool in_battle = is_battle_active(s);
+  const PkMon *bm = &s->battle_mon, *em = &s->enemy_mon;
+  int b = BATTLE_OBS_OFFSET;
+  obs[b + 0] = in_battle ? 1.0f : 0.0f;
+  obs[b + 2] = in_battle ? (float)s->selected_move : 0.0f;
+  obs[b + 5] = in_battle ? mon_hp_fraction(bm) : 0.0f;
+  obs[b + 9] = in_battle ? mon_hp_fraction(em) : 0.0f;
+  if (env->battle_status_obs_enabled) {
+    obs[b + 1] = (float)s->battle_type;
+    obs[b + 3] = in_battle ? (float)bm->species : 0.0f;
+    obs[b + 4] = in_battle ? (float)bm->level : 0.0f;
+    obs[b + 6] = in_battle ? (float)bm->status : 0.0f;
+    obs[b + 7] = in_battle ? (float)em->species : 0.0f;
+    obs[b + 8] = in_battle ? (float)em->level : 0.0f;
+    obs[b + 10] = in_battle ? (float)em->status : 0.0f;
+    obs[b + 11] = (float)s->fainted_count;
+    obs[b + 20] = in_battle ? (float)bm->type1 : 0.0f;
+    obs[b + 21] = in_battle ? (float)bm->type2 : 0.0f;
+    obs[b + 22] = in_battle ? (float)em->type1 : 0.0f;
+    obs[b + 23] = in_battle ? (float)em->type2 : 0.0f;
+  } else {
+    obs[b + 1] = 0.0f;
+    obs[b + 3] = 0.0f;
+    obs[b + 4] = 0.0f;
+    obs[b + 6] = 0.0f;
+    obs[b + 7] = 0.0f;
+    obs[b + 8] = 0.0f;
+    obs[b + 10] = 0.0f;
+    obs[b + 11] = 0.0f;
+    obs[b + 20] = 0.0f;
+    obs[b + 21] = 0.0f;
+    obs[b + 22] = 0.0f;
+    obs[b + 23] = 0.0f;
+  }
 
-  obs[o + 0] = (float)__builtin_popcount(core->badges);
-  obs[o + 1] = (float)core->x;
-  obs[o + 2] = (float)core->y;
-  obs[o + 3] = (float)core->map_n;
-  obs[o + 4] = (float)(read_mem(emu, PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION) / 4);
-  obs[o + 5] = (float)core->party_count;
-  obs[o + 6] = env->map_exhaustion_obs_enabled
-      ? fminf(1.0f, (float)env->map_visited_counts[core->map_n] / env->map_exhaustion_norm)
+  if (env->battle_moveset_obs_enabled) {
+    for (int m = 0; m < 4; m++) {
+      obs[b + 12 + m] = in_battle ? (float)bm->moves[m] : 0.0f;
+      obs[b + 16 + m] = in_battle ? (float)bm->pp[m] : 0.0f;
+    }
+  } else {
+    for (int m = 0; m < 4; m++) {
+      obs[b + 12 + m] = 0.0f;
+      obs[b + 16 + m] = 0.0f;
+    }
+  }
+
+  int p = POSITION_OBS_OFFSET;
+  obs[p + 0] = (float)s->x;
+  obs[p + 1] = (float)s->y;
+  obs[p + 2] = (float)s->map_n;
+  obs[p + 3] = (float)s->facing;
+  obs[p + 4] = env->map_exhaustion_obs_enabled
+      ? fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm)
       : 0.0f;
 
-  bool in_battle = is_battle_active(&env->gstate.battle);
-  obs[o + 7] = in_battle ? 1.0f : 0.0f;
-  obs[o + 8] = in_battle ? (float)read_mem(emu, PKRED_ADDR_PLAYER_SELECTED_MOVE) : 0.0f;
-  obs[o + 9] = in_battle ? battle_mon_hp_fraction(emu) : 0.0f;
-  obs[o + 10] = in_battle ? enemy_mon_hp_fraction(emu) : 0.0f;
+  int g = PROGRESS_OBS_OFFSET;
+  obs[g + 0] = (float)__builtin_popcount(s->badges);
+  for (int i = 0; i < PKRED_NUM_BADGES; i++)
+    obs[g + 1 + i] = env->progress_badges_bits_enabled ? (float)((s->badges >> i) & 1) : 0.0f;
 
-  PREFETCH_READ(env->visited_coords);
-  int v = VISITED_OBS_OFFSET;
-  int half = VISITED_WINDOW / 2;
-  for (int wy = 0; wy < VISITED_WINDOW; wy++) {
-    int cy = (int)core->y + (wy - half);
-    for (int wx = 0; wx < VISITED_WINDOW; wx++) {
-      int cx = (int)core->x + (wx - half);
-      float visited = 0.0f;
-      if (cx >= 0 && cx < MAX_X && cy >= 0 && cy < MAX_Y) {
-        visited = (float)env->visited_coords[coord_index(core->map_n, (uint8_t)cx, (uint8_t)cy)];
-      }
-      obs[v + wy * VISITED_WINDOW + wx] = visited;
+  static const uint8_t HM_ITEM_IDS[5] = {
+      PKRED_ITEM_HM01_CUT, PKRED_ITEM_HM02_FLY, PKRED_ITEM_HM03_SURF,
+      PKRED_ITEM_HM04_STRENGTH, PKRED_ITEM_HM05_FLASH,
+  };
+  for (int i = 0; i < 5; i++)
+    obs[g + 1 + PKRED_NUM_BADGES + i] =
+        env->hm_bag_obs_enabled ? (s->bag_qty[HM_ITEM_IDS[i]] > 0 ? 1.0f : 0.0f) : 0.0f;
+
+  int progress_tail = g + 1 + PKRED_NUM_BADGES + 5;
+  if (env->blackout_map_obs_enabled) {
+    obs[progress_tail + 0] = (float)env->blackout_count;
+    obs[progress_tail + 1] = (float)s->last_blackout_map;
+  } else {
+    obs[progress_tail + 0] = 0.0f;
+    obs[progress_tail + 1] = 0.0f;
+  }
+  obs[progress_tail + 2] = (float)s->pokedex_owned_count;
+  obs[progress_tail + 3] = (float)s->pokedex_seen_count;
+  obs[progress_tail + 4] = env->progress_money_obs_enabled ? (float)s->money : 0.0f;
+
+  int pa = PARTY_OBS_OFFSET;
+  for (int i = 0; i < PARTY_SIZE; i++) {
+    const PkMon *m = &s->party[i];
+    int slot = pa + i * PARTY_FIELDS;
+    obs[slot + 0] = (float)m->species;
+    obs[slot + 1] = (float)m->level;
+    obs[slot + 2] = (float)m->hp;
+    obs[slot + 3] = (float)m->max_hp;
+    for (int k = 0; k < 4; k++)
+      obs[slot + 5 + k] = (float)m->moves[k];
+
+    if (env->party_status_pp_obs_enabled) {
+      obs[slot + 4] = (float)m->status;
+      for (int k = 0; k < 4; k++)
+        obs[slot + 9 + k] = (float)m->pp[k];
+      obs[slot + 13] = (i < s->party_count && m->hp == 0) ? 1.0f : 0.0f;
+    } else {
+      obs[slot + 4] = 0.0f;
+      for (int k = 0; k < 4; k++)
+        obs[slot + 9 + k] = 0.0f;
+      obs[slot + 13] = 0.0f;
+    }
+
+    if (env->party_type_obs_enabled) {
+      obs[slot + 14] = (float)m->type1;
+      obs[slot + 15] = (float)m->type2;
+    } else {
+      obs[slot + 14] = 0.0f;
+      obs[slot + 15] = 0.0f;
     }
   }
 
-  int p = PARTY_OBS_OFFSET;
-  for (int i = 0; i < PARTY_SIZE; i++) {
-    uint16_t base = PKRED_ADDR_PARTY_MON(i);
-    uint8_t id     = read_mem(emu, base + offsetof(PkredPartyMon, species));
-    uint8_t level  = read_mem(emu, base + offsetof(PkredPartyMon, level));
-    uint16_t hp    = read_big_endian_16(emu, base + offsetof(PkredPartyMon, hp_hi));
-    uint16_t maxhp = read_big_endian_16(emu, base + offsetof(PkredPartyMon, max_hp_hi));
-
-    obs[p + i * PARTY_FIELDS + 0] = (float)id;
-    obs[p + i * PARTY_FIELDS + 1] = (float)level;
-    obs[p + i * PARTY_FIELDS + 2] = (float)hp;
-    obs[p + i * PARTY_FIELDS + 3] = (float)maxhp;
-  }
+  int bg = BAG_OBS_OFFSET;
+  obs[bg + 0] = env->bag_obs_enabled ? (float)s->num_bag_items : 0.0f;
+  for (int i = 0; i < PKRED_BAG_TRACKED_ITEMS; i++)
+    obs[bg + 1 + i] = env->bag_obs_enabled ? (float)s->bag_qty[PKRED_BAG_TRACKED_ITEM_IDS[i]] : 0.0f;
+  for (int i = 0; i < PKRED_KEY_ITEMS; i++)
+    obs[bg + 1 + PKRED_BAG_TRACKED_ITEMS + i] =
+        env->key_item_obs_enabled ? (s->bag_qty[PKRED_KEY_ITEM_IDS[i]] > 0 ? 1.0f : 0.0f) : 0.0f;
 }
 
-static int calc_pokedex_count(Emulator *emu, uint16_t addr, int size) {
-  int count = 0;
-  for (int i = 0; i < size; i++)
-    count += __builtin_popcount(read_mem(emu, addr + i));
-  return count;
-}
-
-static void update_core_state(Env *env) {
-  CoreState *core = &env->gstate.core;
-  Emulator *emu = &env->emu;
-
-  core->x = read_mem(emu, PKRED_ADDR_X_COORD);
-  core->y = read_mem(emu, PKRED_ADDR_Y_COORD);
-  core->map_n = read_mem(emu, PKRED_ADDR_CUR_MAP);
-  core->idx = coord_index(core->map_n, core->x, core->y);
-  core->badges = read_mem(emu, PKRED_ADDR_OBTAINED_BADGES);
-  core->party_count = read_mem(emu, PKRED_ADDR_PARTY_COUNT);
-  for (int i = 0; i < 6; i++) {
-    core->levels[i] = read_mem(emu, PKRED_ADDR_PARTY_MON(i) + offsetof(PkredPartyMon, level));
-    for (int m = 0; m < 4; m++)
-      core->moves[i][m] = read_mem(emu, PKRED_ADDR_PARTY_MON(i) + offsetof(PkredPartyMon, moves) + m);
-  }
-  core->pokedex_owned_count = (uint8_t)calc_pokedex_count(emu, PKRED_ADDR_POKEDEX_OWNED, POKEDEX_OWNED_SIZE);
-  core->pokedex_seen_count = (uint8_t)calc_pokedex_count(emu, PKRED_ADDR_POKEDEX_SEEN, POKEDEX_SEEN_SIZE);
-  core->hp_fraction = party_hp_fraction(emu);
-}
-
-#endif /* POKERED_OBSERVATIONS_H */
+#endif

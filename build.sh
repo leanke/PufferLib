@@ -16,6 +16,13 @@ set -e
 #                                    # packs website 1M-cap policy + *_web.ini
 #                                    # copy build/web/ENV/* to ../docker/puffer.ai/docs/assets/ENV/
 #   ./build.sh breakout --profile    # Kernel profiling binary
+#   ./build.sh pokered --dual-head   # Splits the action+value head into
+#                                    # separate battle/overworld weight
+#                                    # matrices gated on in_battle (pokered
+#                                    # only); changes network shape, so it
+#                                    # requires training a fresh checkpoint.
+#   ./build.sh pokered --no-redcore  # Emulator backend only: skips cloning/building
+#                                    # vendor/redcore (--env.backend=redcore then errors).
 #   ./build.sh constellation         # Sweep dashboard -> ./seethestars
 #   ./build.sh cache_data            # Sweep log cache -> ./cache_data
 #   ./build.sh trailer               # 5.0 trailer -> ./resources/trailer/trailer (also exports diagrams)
@@ -33,6 +40,11 @@ if [ -z "$1" ]; then
 fi
 ENV=$1
 shift
+# redcore is a backend of pokered now ([env] backend = "redcore"), not its own env.
+if [ "$ENV" = "redcore" ]; then
+    echo "Note: redcore is now a pokered backend; building pokered. Select it at runtime with --env.backend=redcore." >&2
+    ENV=pokered
+fi
 OUT=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
     OUT=$1
@@ -50,6 +62,8 @@ while [ $# -gt 0 ]; do
         --web)   MODE=web ;;
         --profile) MODE=profile ;;
         --cpu)   MODE=cpu ;;
+        --dual-head) POKERED_DUAL_HEAD=1 ;;
+        --no-redcore) POKERED_NO_REDCORE=1 ;;
         *) echo "Error: unknown argument '$1'" && exit 1 ;;
     esac
     shift
@@ -139,6 +153,9 @@ if [ -n "${NVCC_EXTRA:-}" ]; then
     read -ra _nvcc_extra <<< "$NVCC_EXTRA"
     EXTRA_CFLAGS+=("${_nvcc_extra[@]}")
 fi
+if [ "${POKERED_DUAL_HEAD:-0}" = "1" ]; then
+    EXTRA_CFLAGS+=(-DPOKERED_DUAL_HEAD)
+fi
 SRC_FILE=""
 
 if [ "$ENV" = "clifford" ]; then
@@ -204,7 +221,7 @@ elif [ "$ENV" = "pokered" ]; then
     if [ ! -f "$GAMBATTE_DIR/install/lib/libgambatte.a" ]; then
         echo "Building libgambatte (static) ..."
         [ -d "$GAMBATTE_DIR/src" ] || \
-            git clone --depth 1 --branch pufferlib-raw-state \
+            git clone --depth 1 --branch sloppy \
                 https://github.com/leanke/gambatte-libretro.git "$GAMBATTE_DIR/src"
         GB_SRC_ROOT="$GAMBATTE_DIR/src"
         GB_CORE="$GB_SRC_ROOT/libgambatte/src"
@@ -244,7 +261,43 @@ elif [ "$ENV" = "pokered" ]; then
     LINK_ARCHIVES+=("$GAMBATTE_DIR/install/lib/libgambatte.a")
 
     # cJSON: minimal JSON dep backing pokered_stream.h.
-    EXTRA_SRC="ocean/pokered/gambatte/gambatte_c.cpp vendor/cJSON.c"
+    EXTRA_SRC="ocean/pokered/gambatte/gambatte_c.cpp ocean/pokered/backends/emulator.cpp ocean/pokered/backends/event_names.cpp vendor/cJSON.c"
+
+    # redcore backend: a from-scratch native C Pokemon Red reimplementation
+    # (https://github.com/leanke/redcore) selected at runtime with
+    # [env] backend = "redcore". Vendored as a local clone (cloned from the
+    # local sibling checkout when present, else GitHub), built with its own
+    # CMake into libredcore_core.a. Its generic-named headers and #define dump
+    # must not leak into the trainer's translation unit, so the backend glue
+    # (backends/redcore.cpp) is compiled to its own object with the engine
+    # include paths instead of going through EXTRA_SRC/INCLUDES.
+    if [ "${POKERED_NO_REDCORE:-0}" = "1" ]; then
+        EXTRA_SRC="$EXTRA_SRC ocean/pokered/backends/redcore_stub.cpp"
+    else
+        REDCORE_DIR="vendor/redcore"
+        REDCORE_LOCAL="$HOME/loft/C/native/redcore"
+        REDCORE_REMOTE="https://github.com/leanke/redcore.git"
+        # Not pinned: a missing vendor/redcore is cloned at the tip of redcore's
+        # default branch; an existing one is used as-is (update it yourself).
+        if [ ! -d "$REDCORE_DIR/.git" ]; then
+            REDCORE_SRC="$REDCORE_REMOTE"
+            [ -d "$REDCORE_LOCAL/.git" ] && REDCORE_SRC="$REDCORE_LOCAL"
+            echo "Cloning redcore from $REDCORE_SRC ..."
+            git clone "$REDCORE_SRC" "$REDCORE_DIR"
+        fi
+        REDCORE_BUILD="$(pwd)/$REDCORE_DIR/build"
+        # Always (re)configure/build: updating vendor/redcore must not leave a
+        # stale archive linked in; cmake makes this near-instant when unchanged.
+        echo "Building libredcore_core.a ..."
+        cmake -S "$REDCORE_DIR" -B "$REDCORE_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+        cmake --build "$REDCORE_BUILD" --target redcore_core -j"$(nproc)"
+        REDCORE_OBJ="$REDCORE_BUILD/pokered_redcore_backend.o"
+        ${CXX:-g++} -std=c++17 -O2 -fopenmp -DPLATFORM_DESKTOP \
+            -I./$RAYLIB_NAME/include -I./src -I./vendor -I./ocean/pokered \
+            -I./$REDCORE_DIR/src/core -I./$REDCORE_DIR/src/gen \
+            -c ocean/pokered/backends/redcore.cpp -o "$REDCORE_OBJ"
+        LINK_ARCHIVES+=("$REDCORE_OBJ" "$REDCORE_BUILD/libredcore_core.a")
+    fi
     EXTRA_CFLAGS+=(-D__LIBRETRO__ -DHAVE_CSTDINT)
     # OpenSSL: TLS client used by pokered_stream.h.
     EXTRA_LDFLAGS+=(-lssl -lcrypto)

@@ -23,8 +23,12 @@ void gambatte_run_frame(gambatte_handle gb, uint32_t *videoBuf);
 
 void gambatte_set_input(gambatte_handle gb, unsigned buttons);
 
+void gambatte_set_audio_enabled(gambatte_handle gb, bool enabled);
+
 uint8_t gambatte_read_mem(gambatte_handle gb, uint16_t addr);
 void    gambatte_write_mem(gambatte_handle gb, uint16_t addr, uint8_t val);
+
+const uint8_t *gambatte_rambank1_ptr(gambatte_handle gb);
 
 bool gambatte_save_state_file(gambatte_handle gb, const char *path);
 bool gambatte_load_state_file(gambatte_handle gb, const char *path);

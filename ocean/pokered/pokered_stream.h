@@ -35,7 +35,7 @@ typedef struct {
     int interval;
     char user[64];
     char color[16];
-    char run_id[9];       // 8 hex chars + NUL, generated once per process
+    char run_id[9];
     uint32_t env_id;
 
     int fd;
@@ -265,13 +265,7 @@ static bool stream_try_send(PokeredStream *s) {
 
 static void stream_init(PokeredStream *s, bool enabled, const char *user,
                          const char *color, uint32_t env_id, int interval) {
-    // A closed/reset socket (stream_send_frame's SSL_write) delivers SIGPIPE
-    // on write(); the default disposition kills the whole process with no
-    // message. Ignore it here so write()/SSL_write() just return -1/EPIPE,
-    // which stream_try_send/stream_flush already handle. Kept on the env
-    // side (rather than in the trainer's main()) since it's pokered-specific
-    // and process-wide signal disposition is harmless to set redundantly
-    // once per env.
+
     signal(SIGPIPE, SIG_IGN);
     memset(s, 0, sizeof(*s));
     s->enabled = enabled;
@@ -313,4 +307,4 @@ static void stream_close(PokeredStream *s) {
     stream_disconnect(s);
 }
 
-#endif /* POKERED_STREAM_H */
+#endif
