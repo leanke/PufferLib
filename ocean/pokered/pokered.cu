@@ -27,9 +27,6 @@
 #define PKR_ENC_PROGRESS_IN PROGRESS_OBS
 #define PKR_ENC_PROGRESS_HIDDEN 24
 
-#define PKR_ENC_BAG_IN BAG_OBS
-#define PKR_ENC_BAG_HIDDEN 16
-
 #define PKR_ENC_VISITED_IN VISITED_MASK_OBS
 #define PKR_ENC_VISITED_HIDDEN 8
 
@@ -37,22 +34,18 @@
 #define PKR_PARTY_SPECIES_EMBED_DIM 8
 #define PKR_MOVE_VOCAB 256
 #define PKR_MOVE_EMBED_DIM 4
-#define PKR_TYPE_VOCAB 32
-#define PKR_TYPE_EMBED_DIM 4
 #define PKR_PARTY_LEVEL_SCALE 100.0f
 #define PKR_PARTY_HP_SCALE 1024.0f
-#define PKR_PARTY_STATUS_SCALE 255.0f
-#define PKR_PARTY_PP_SCALE 64.0f
-#define PKR_PARTY_RAW_SCALARS 9
+#define PKR_PARTY_RAW_SCALARS 3
 #define PKR_PARTY_SLOT_IN (PKR_PARTY_SPECIES_EMBED_DIM + 4 * PKR_MOVE_EMBED_DIM + \
-    2 * PKR_TYPE_EMBED_DIM + PKR_PARTY_RAW_SCALARS)
+    PKR_PARTY_RAW_SCALARS)
 #define PKR_PARTY_MLP_IN (PARTY_SIZE * PKR_PARTY_SLOT_IN)
 #define PKR_PARTY_HIDDEN 56
 
-#define PKR_GATE_BRANCHES 6
+#define PKR_GATE_BRANCHES 5
 
 #define PKR_ENC_CONCAT (PKR_ENC_CONV_FLAT + PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + \
-    PKR_ENC_PROGRESS_HIDDEN + PKR_PARTY_HIDDEN + PKR_ENC_BAG_HIDDEN + PKR_ENC_VISITED_HIDDEN)
+    PKR_ENC_PROGRESS_HIDDEN + PKR_PARTY_HIDDEN + PKR_ENC_VISITED_HIDDEN)
 
 __global__ void pkr_c1_im2col(
         const precision_t* __restrict__ obs, precision_t* __restrict__ col,
@@ -209,37 +202,17 @@ __global__ void pkr_party_move_idx_kernel(
     int s = rem / 4;
     int mslot = rem % 4;
     float mv = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
-        + s * PARTY_FIELDS + 5 + mslot]);
+        + s * PARTY_FIELDS + 4 + mslot]);
     int v = (int)(mv + 0.5f);
     v = v < 0 ? 0 : v;
     move_idx[idx] = v >= PKR_MOVE_VOCAB ? PKR_MOVE_VOCAB - 1 : v;
-}
-
-__global__ void pkr_party_type_idx_kernel(
-        const precision_t* __restrict__ obs, int* __restrict__ type_idx,
-        int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PARTY_SIZE * 2) {
-        return;
-    }
-    int b = idx / (PARTY_SIZE * 2);
-    int rem = idx % (PARTY_SIZE * 2);
-    int s = rem / 2;
-    int tslot = rem % 2;
-    float tv = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
-        + s * PARTY_FIELDS + 14 + tslot]);
-    int v = (int)(tv + 0.5f);
-    v = v < 0 ? 0 : v;
-    type_idx[idx] = v >= PKR_TYPE_VOCAB ? PKR_TYPE_VOCAB - 1 : v;
 }
 
 __global__ void pkr_party_gather_kernel(
         const precision_t* __restrict__ obs,
         const precision_t* __restrict__ species_embed_w,
         const precision_t* __restrict__ move_embed_w,
-        const precision_t* __restrict__ type_embed_w,
         const int* __restrict__ species_idx, const int* __restrict__ move_idx,
-        const int* __restrict__ type_idx,
         precision_t* __restrict__ out, int B, int obs_size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * PKR_PARTY_MLP_IN) {
@@ -263,26 +236,9 @@ __global__ void pkr_party_gather_kernel(
         out[idx] = move_embed_w[v * PKR_MOVE_EMBED_DIM + e];
         return;
     }
-    int f3 = f2 - 4 * PKR_MOVE_EMBED_DIM;
-    if (f3 < 2 * PKR_TYPE_EMBED_DIM) {
-        int tslot = f3 / PKR_TYPE_EMBED_DIM;
-        int e = f3 % PKR_TYPE_EMBED_DIM;
-        int v = type_idx[(b * PARTY_SIZE + s) * 2 + tslot];
-        out[idx] = type_embed_w[v * PKR_TYPE_EMBED_DIM + e];
-        return;
-    }
-    int field9 = f3 - 2 * PKR_TYPE_EMBED_DIM;
-    int obs_field;
-    float scale;
-    switch (field9) {
-        case 0: obs_field = 1; scale = PKR_PARTY_LEVEL_SCALE; break;
-        case 1: obs_field = 2; scale = PKR_PARTY_HP_SCALE; break;
-        case 2: obs_field = 3; scale = PKR_PARTY_HP_SCALE; break;
-        case 3: obs_field = 4; scale = PKR_PARTY_STATUS_SCALE; break;
-        case 4: case 5: case 6: case 7:
-            obs_field = 9 + (field9 - 4); scale = PKR_PARTY_PP_SCALE; break;
-        default: obs_field = 13; scale = 1.0f; break;
-    }
+    int field3 = f2 - 4 * PKR_MOVE_EMBED_DIM;
+    int obs_field = 1 + field3;
+    float scale = field3 == 0 ? PKR_PARTY_LEVEL_SCALE : PKR_PARTY_HP_SCALE;
     float raw = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
         + s * PARTY_FIELDS + obs_field]);
     out[idx] = from_float(raw / scale);
@@ -294,7 +250,6 @@ __global__ void pkr_concat_kernel(
         const precision_t* __restrict__ battle_hidden,
         const precision_t* __restrict__ progress_hidden,
         const precision_t* __restrict__ party_hidden,
-        const precision_t* __restrict__ bag_hidden,
         const precision_t* __restrict__ visited_hidden, int B) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * PKR_ENC_CONCAT) {
@@ -312,8 +267,6 @@ __global__ void pkr_concat_kernel(
     c -= PKR_ENC_PROGRESS_HIDDEN;
     if (c < PKR_PARTY_HIDDEN) { out[idx] = party_hidden[b * PKR_PARTY_HIDDEN + c]; return; }
     c -= PKR_PARTY_HIDDEN;
-    if (c < PKR_ENC_BAG_HIDDEN) { out[idx] = bag_hidden[b * PKR_ENC_BAG_HIDDEN + c]; return; }
-    c -= PKR_ENC_BAG_HIDDEN;
     out[idx] = visited_hidden[b * PKR_ENC_VISITED_HIDDEN + c];
 }
 
@@ -326,8 +279,7 @@ __device__ __forceinline__ int pkr_gate_branch_of(int off) {
     off -= PKR_ENC_PROGRESS_HIDDEN;
     if (off < PKR_PARTY_HIDDEN) return 3;
     off -= PKR_PARTY_HIDDEN;
-    if (off < PKR_ENC_BAG_HIDDEN) return 4;
-    return 5;
+    return 4;
 }
 
 __global__ void pkr_gate_kernel(
@@ -383,7 +335,6 @@ __global__ void pkr_gate_backward_kernel(
         precision_t* __restrict__ battle_grad,
         precision_t* __restrict__ progress_grad,
         precision_t* __restrict__ party_grad,
-        precision_t* __restrict__ bag_grad,
         precision_t* __restrict__ visited_grad,
         precision_t* __restrict__ gate_dz,
         int B) {
@@ -402,10 +353,8 @@ __global__ void pkr_gate_backward_kernel(
                 len = PKR_ENC_PROGRESS_HIDDEN; branch_grad = progress_grad; break;
         case 3: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + PKR_ENC_PROGRESS_HIDDEN;
                 len = PKR_PARTY_HIDDEN; branch_grad = party_grad; break;
-        case 4: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + PKR_ENC_PROGRESS_HIDDEN + PKR_PARTY_HIDDEN;
-                len = PKR_ENC_BAG_HIDDEN; branch_grad = bag_grad; break;
         default: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + PKR_ENC_PROGRESS_HIDDEN +
-                PKR_PARTY_HIDDEN + PKR_ENC_BAG_HIDDEN;
+                PKR_PARTY_HIDDEN;
                 len = PKR_ENC_VISITED_HIDDEN; branch_grad = visited_grad; break;
     }
     float g = to_float(gate[idx]);
@@ -482,30 +431,6 @@ __global__ void pkr_party_move_embed_wgrad_kernel(
     wgrad[idx] = from_float(sum);
 }
 
-__global__ void pkr_party_type_embed_wgrad_kernel(
-        precision_t* __restrict__ wgrad, const precision_t* __restrict__ grad_party_in,
-        const int* __restrict__ type_idx, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= PKR_TYPE_VOCAB * PKR_TYPE_EMBED_DIM) {
-        return;
-    }
-    int v = idx / PKR_TYPE_EMBED_DIM;
-    int e = idx % PKR_TYPE_EMBED_DIM;
-    float sum = 0.0f;
-    for (int b = 0; b < B; b++) {
-        for (int s = 0; s < PARTY_SIZE; s++) {
-            for (int tslot = 0; tslot < 2; tslot++) {
-                if (type_idx[(b * PARTY_SIZE + s) * 2 + tslot] == v) {
-                    int f = PKR_PARTY_SPECIES_EMBED_DIM + 4 * PKR_MOVE_EMBED_DIM
-                        + tslot * PKR_TYPE_EMBED_DIM + e;
-                    sum += to_float(grad_party_in[(b * PARTY_SIZE + s) * PKR_PARTY_SLOT_IN + f]);
-                }
-            }
-        }
-    }
-    wgrad[idx] = from_float(sum);
-}
-
 __global__ void pkr_relu_kernel(precision_t* __restrict__ data, int total) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) {
@@ -527,8 +452,8 @@ __global__ void pkr_relu_backward_kernel(
 
 struct PokeredEncoderWeights {
     Prec conv1_w, conv2_w;
-    Prec position_w, battle_w, progress_w, bag_w, visited_w;
-    Prec party_species_embed_w, party_move_embed_w, party_type_embed_w, party_w;
+    Prec position_w, battle_w, progress_w, visited_w;
+    Prec party_species_embed_w, party_move_embed_w, party_w;
     Prec gate_w, gate_b;
     Prec proj_w;
     int obs_size, hidden;
@@ -540,11 +465,10 @@ struct PokeredEncoderActivations {
     Prec position_in, position_out, position_grad, position_wgrad;
     Prec battle_in, battle_out, battle_grad, battle_wgrad;
     Prec progress_in, progress_out, progress_grad, progress_wgrad;
-    Prec bag_in, bag_out, bag_grad, bag_wgrad;
     Prec visited_in, visited_out, visited_grad, visited_wgrad;
-    Int party_species_idx, party_move_idx, party_type_idx;
+    Int party_species_idx, party_move_idx;
     Prec party_in, party_out, party_grad, party_wgrad;
-    Prec party_species_embed_wgrad, party_move_embed_wgrad, party_type_embed_wgrad;
+    Prec party_species_embed_wgrad, party_move_embed_wgrad;
     Prec gate_out, gate_x, gate_dz, gate_w_grad, gate_b_grad;
     Prec concat_raw, concat, out, proj_wgrad;
 };
@@ -611,8 +535,6 @@ static Prec pokered_encoder_forward(
         BATTLE_OBS_OFFSET, PKR_ENC_BATTLE_IN, PKR_ENC_BATTLE_HIDDEN, B, ew->obs_size, stream);
     pkr_branch_forward(&input, &a->progress_in, &ew->progress_w, &a->progress_out,
         PROGRESS_OBS_OFFSET, PKR_ENC_PROGRESS_IN, PKR_ENC_PROGRESS_HIDDEN, B, ew->obs_size, stream);
-    pkr_branch_forward(&input, &a->bag_in, &ew->bag_w, &a->bag_out,
-        BAG_OBS_OFFSET, PKR_ENC_BAG_IN, PKR_ENC_BAG_HIDDEN, B, ew->obs_size, stream);
     pkr_branch_forward(&input, &a->visited_in, &ew->visited_w, &a->visited_out,
         VISITED_MASK_OFFSET, PKR_ENC_VISITED_IN, PKR_ENC_VISITED_HIDDEN, B, ew->obs_size, stream);
 
@@ -620,19 +542,17 @@ static Prec pokered_encoder_forward(
         input.data, a->party_species_idx.data, B, ew->obs_size);
     pkr_party_move_idx_kernel<<<grid_size(B * PARTY_SIZE * 4), BLOCK_SIZE, 0, stream>>>(
         input.data, a->party_move_idx.data, B, ew->obs_size);
-    pkr_party_type_idx_kernel<<<grid_size(B * PARTY_SIZE * 2), BLOCK_SIZE, 0, stream>>>(
-        input.data, a->party_type_idx.data, B, ew->obs_size);
     pkr_party_gather_kernel<<<grid_size(B * PKR_PARTY_MLP_IN), BLOCK_SIZE, 0, stream>>>(
         input.data, ew->party_species_embed_w.data, ew->party_move_embed_w.data,
-        ew->party_type_embed_w.data, a->party_species_idx.data, a->party_move_idx.data,
-        a->party_type_idx.data, a->party_in.data, B, ew->obs_size);
+        a->party_species_idx.data, a->party_move_idx.data,
+        a->party_in.data, B, ew->obs_size);
     puf_mm(&a->party_in, &ew->party_w, &a->party_out, stream);
     pkr_relu_kernel<<<grid_size(B * PKR_PARTY_HIDDEN), BLOCK_SIZE, 0, stream>>>(
         a->party_out.data, B * PKR_PARTY_HIDDEN);
 
     pkr_concat_kernel<<<grid_size(B * PKR_ENC_CONCAT), BLOCK_SIZE, 0, stream>>>(
         a->concat_raw.data, a->conv2_out.data, a->position_out.data, a->battle_out.data,
-        a->progress_out.data, a->party_out.data, a->bag_out.data, a->visited_out.data, B);
+        a->progress_out.data, a->party_out.data, a->visited_out.data, B);
 
     pkr_gate_kernel<<<grid_size(B * PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
         input.data, ew->gate_w.data, ew->gate_b.data, a->gate_out.data, a->gate_x.data, B, ew->obs_size);
@@ -663,7 +583,7 @@ static void pokered_encoder_backward(
     pkr_gate_backward_kernel<<<grid_size(B * PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
         grad_concat_gated.data, a->concat_raw.data, a->gate_out.data,
         a->position_grad.data, a->battle_grad.data, a->progress_grad.data,
-        a->party_grad.data, a->bag_grad.data, a->visited_grad.data, a->gate_dz.data, B);
+        a->party_grad.data, a->visited_grad.data, a->gate_dz.data, B);
     pkr_gate_wgrad_kernel<<<grid_size(PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
         a->gate_dz.data, a->gate_x.data, a->gate_w_grad.data, a->gate_b_grad.data, B);
 
@@ -673,8 +593,6 @@ static void pokered_encoder_backward(
         PKR_ENC_BATTLE_HIDDEN, stream);
     pkr_branch_backward(&a->progress_grad, &a->progress_out, &a->progress_in, &a->progress_wgrad,
         PKR_ENC_PROGRESS_HIDDEN, stream);
-    pkr_branch_backward(&a->bag_grad, &a->bag_out, &a->bag_in, &a->bag_wgrad,
-        PKR_ENC_BAG_HIDDEN, stream);
     pkr_branch_backward(&a->visited_grad, &a->visited_out, &a->visited_in, &a->visited_wgrad,
         PKR_ENC_VISITED_HIDDEN, stream);
 
@@ -692,10 +610,6 @@ static void pokered_encoder_backward(
         grid_size(PKR_MOVE_VOCAB * PKR_MOVE_EMBED_DIM), BLOCK_SIZE, 0,
         stream>>>(a->party_move_embed_wgrad.data, grad_party_in.data,
         a->party_move_idx.data, B);
-    pkr_party_type_embed_wgrad_kernel<<<
-        grid_size(PKR_TYPE_VOCAB * PKR_TYPE_EMBED_DIM), BLOCK_SIZE, 0,
-        stream>>>(a->party_type_embed_wgrad.data, grad_party_in.data,
-        a->party_type_idx.data, B);
 
     pkr_conv_wgrad(a->conv2_grad.data, a->conv2_wgrad.data,
         a->col2.data, a->mm2.data, B, PKR_ENC_C2_OC, PKR_ENC_C2_SPATIAL,
@@ -722,7 +636,6 @@ static void pokered_encoder_init_weights(
     Prec pos_w = {.data = ew->position_w.data, .shape = {PKR_ENC_POSITION_HIDDEN, PKR_ENC_POSITION_IN}};
     Prec bat_w = {.data = ew->battle_w.data, .shape = {PKR_ENC_BATTLE_HIDDEN, PKR_ENC_BATTLE_IN}};
     Prec prog_w = {.data = ew->progress_w.data, .shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    Prec bag_w = {.data = ew->bag_w.data, .shape = {PKR_ENC_BAG_HIDDEN, PKR_ENC_BAG_IN}};
     Prec vis_w = {.data = ew->visited_w.data, .shape = {PKR_ENC_VISITED_HIDDEN, PKR_ENC_VISITED_IN}};
     Prec pw = {.data = ew->party_w.data, .shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
     Prec proj = {.data = ew->proj_w.data, .shape = {ew->hidden, PKR_ENC_CONCAT}};
@@ -731,12 +644,10 @@ static void pokered_encoder_init_weights(
     puf_kaiming_init(&pos_w, sqrtf(2.0f), (*seed)++, stream);
     puf_kaiming_init(&bat_w, sqrtf(2.0f), (*seed)++, stream);
     puf_kaiming_init(&prog_w, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&bag_w, sqrtf(2.0f), (*seed)++, stream);
     puf_kaiming_init(&vis_w, sqrtf(2.0f), (*seed)++, stream);
     puf_kaiming_init(&pw, sqrtf(2.0f), (*seed)++, stream);
     puf_normal_init(&ew->party_species_embed_w, 0.02f, (*seed)++, stream);
     puf_normal_init(&ew->party_move_embed_w, 0.02f, (*seed)++, stream);
-    puf_normal_init(&ew->party_type_embed_w, 0.02f, (*seed)++, stream);
 
     puf_normal_init(&ew->gate_w, 0.01f, (*seed)++, stream);
     puf_normal_init(&ew->gate_b, 0.01f, (*seed)++, stream);
@@ -750,11 +661,9 @@ static void pokered_encoder_reg_params(void* w, Allocator* alloc) {
     ew->position_w = {.shape = {PKR_ENC_POSITION_HIDDEN, PKR_ENC_POSITION_IN}};
     ew->battle_w = {.shape = {PKR_ENC_BATTLE_HIDDEN, PKR_ENC_BATTLE_IN}};
     ew->progress_w = {.shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    ew->bag_w = {.shape = {PKR_ENC_BAG_HIDDEN, PKR_ENC_BAG_IN}};
     ew->visited_w = {.shape = {PKR_ENC_VISITED_HIDDEN, PKR_ENC_VISITED_IN}};
     ew->party_species_embed_w = {.shape = {PKR_PARTY_SPECIES_VOCAB, PKR_PARTY_SPECIES_EMBED_DIM}};
     ew->party_move_embed_w = {.shape = {PKR_MOVE_VOCAB, PKR_MOVE_EMBED_DIM}};
-    ew->party_type_embed_w = {.shape = {PKR_TYPE_VOCAB, PKR_TYPE_EMBED_DIM}};
     ew->party_w = {.shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
     ew->gate_w = {.shape = {PKR_GATE_BRANCHES}};
     ew->gate_b = {.shape = {PKR_GATE_BRANCHES}};
@@ -764,11 +673,9 @@ static void pokered_encoder_reg_params(void* w, Allocator* alloc) {
     alloc_register(alloc, &ew->position_w);
     alloc_register(alloc, &ew->battle_w);
     alloc_register(alloc, &ew->progress_w);
-    alloc_register(alloc, &ew->bag_w);
     alloc_register(alloc, &ew->visited_w);
     alloc_register(alloc, &ew->party_species_embed_w);
     alloc_register(alloc, &ew->party_move_embed_w);
-    alloc_register(alloc, &ew->party_type_embed_w);
     alloc_register(alloc, &ew->party_w);
     alloc_register(alloc, &ew->gate_w);
     alloc_register(alloc, &ew->gate_b);
@@ -802,10 +709,6 @@ static void pokered_encoder_reg_train(
     a->progress_out = {.shape = {B_TT, PKR_ENC_PROGRESS_HIDDEN}};
     a->progress_grad = {.shape = {B_TT, PKR_ENC_PROGRESS_HIDDEN}};
     a->progress_wgrad = {.shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    a->bag_in = {.shape = {B_TT, PKR_ENC_BAG_IN}};
-    a->bag_out = {.shape = {B_TT, PKR_ENC_BAG_HIDDEN}};
-    a->bag_grad = {.shape = {B_TT, PKR_ENC_BAG_HIDDEN}};
-    a->bag_wgrad = {.shape = {PKR_ENC_BAG_HIDDEN, PKR_ENC_BAG_IN}};
     a->visited_in = {.shape = {B_TT, PKR_ENC_VISITED_IN}};
     a->visited_out = {.shape = {B_TT, PKR_ENC_VISITED_HIDDEN}};
     a->visited_grad = {.shape = {B_TT, PKR_ENC_VISITED_HIDDEN}};
@@ -813,14 +716,12 @@ static void pokered_encoder_reg_train(
 
     a->party_species_idx = {.shape = {B_TT, PARTY_SIZE}};
     a->party_move_idx = {.shape = {B_TT, PARTY_SIZE, 4}};
-    a->party_type_idx = {.shape = {B_TT, PARTY_SIZE, 2}};
     a->party_in = {.shape = {B_TT, PKR_PARTY_MLP_IN}};
     a->party_out = {.shape = {B_TT, PKR_PARTY_HIDDEN}};
     a->party_grad = {.shape = {B_TT, PKR_PARTY_HIDDEN}};
     a->party_wgrad = {.shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
     a->party_species_embed_wgrad = {.shape = {PKR_PARTY_SPECIES_VOCAB, PKR_PARTY_SPECIES_EMBED_DIM}};
     a->party_move_embed_wgrad = {.shape = {PKR_MOVE_VOCAB, PKR_MOVE_EMBED_DIM}};
-    a->party_type_embed_wgrad = {.shape = {PKR_TYPE_VOCAB, PKR_TYPE_EMBED_DIM}};
 
     a->gate_out = {.shape = {B_TT, PKR_GATE_BRANCHES}};
     a->gate_x = {.shape = {B_TT}};
@@ -846,18 +747,14 @@ static void pokered_encoder_reg_train(
     alloc_register(acts, &a->battle_grad); alloc_register(grads, &a->battle_wgrad);
     alloc_register(acts, &a->progress_in); alloc_register(acts, &a->progress_out);
     alloc_register(acts, &a->progress_grad); alloc_register(grads, &a->progress_wgrad);
-    alloc_register(acts, &a->bag_in); alloc_register(acts, &a->bag_out);
-    alloc_register(acts, &a->bag_grad); alloc_register(grads, &a->bag_wgrad);
     alloc_register(acts, &a->visited_in); alloc_register(acts, &a->visited_out);
     alloc_register(acts, &a->visited_grad); alloc_register(grads, &a->visited_wgrad);
 
     alloc_register(acts, &a->party_species_idx); alloc_register(acts, &a->party_move_idx);
-    alloc_register(acts, &a->party_type_idx);
     alloc_register(acts, &a->party_in); alloc_register(acts, &a->party_out);
     alloc_register(acts, &a->party_grad); alloc_register(grads, &a->party_wgrad);
     alloc_register(grads, &a->party_species_embed_wgrad);
     alloc_register(grads, &a->party_move_embed_wgrad);
-    alloc_register(grads, &a->party_type_embed_wgrad);
 
     alloc_register(acts, &a->gate_out); alloc_register(acts, &a->gate_x);
     alloc_register(acts, &a->gate_dz);
@@ -886,14 +783,11 @@ static void pokered_encoder_reg_rollout(
     a->battle_out = {.shape = {B, PKR_ENC_BATTLE_HIDDEN}};
     a->progress_in = {.shape = {B, PKR_ENC_PROGRESS_IN}};
     a->progress_out = {.shape = {B, PKR_ENC_PROGRESS_HIDDEN}};
-    a->bag_in = {.shape = {B, PKR_ENC_BAG_IN}};
-    a->bag_out = {.shape = {B, PKR_ENC_BAG_HIDDEN}};
     a->visited_in = {.shape = {B, PKR_ENC_VISITED_IN}};
     a->visited_out = {.shape = {B, PKR_ENC_VISITED_HIDDEN}};
 
     a->party_species_idx = {.shape = {B, PARTY_SIZE}};
     a->party_move_idx = {.shape = {B, PARTY_SIZE, 4}};
-    a->party_type_idx = {.shape = {B, PARTY_SIZE, 2}};
     a->party_in = {.shape = {B, PKR_PARTY_MLP_IN}};
     a->party_out = {.shape = {B, PKR_PARTY_HIDDEN}};
 
@@ -910,10 +804,8 @@ static void pokered_encoder_reg_rollout(
     alloc_register(alloc, &a->position_in); alloc_register(alloc, &a->position_out);
     alloc_register(alloc, &a->battle_in); alloc_register(alloc, &a->battle_out);
     alloc_register(alloc, &a->progress_in); alloc_register(alloc, &a->progress_out);
-    alloc_register(alloc, &a->bag_in); alloc_register(alloc, &a->bag_out);
     alloc_register(alloc, &a->visited_in); alloc_register(alloc, &a->visited_out);
     alloc_register(alloc, &a->party_species_idx); alloc_register(alloc, &a->party_move_idx);
-    alloc_register(alloc, &a->party_type_idx);
     alloc_register(alloc, &a->party_in); alloc_register(alloc, &a->party_out);
     alloc_register(alloc, &a->gate_out); alloc_register(alloc, &a->gate_x);
     alloc_register(alloc, &a->concat_raw); alloc_register(alloc, &a->concat);

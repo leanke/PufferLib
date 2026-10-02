@@ -270,21 +270,13 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
 
 void emu_screen(void *impl, float *obs) {
     const color_t *vbuf = ((EmuBackend *)impl)->emu.video_buffer;
-    for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
-        for (int sx = 0; sx < SCALED_WIDTH; sx++) {
-            int src_y = sy * 2;
-            int src_x = sx * 2;
-            uint32_t gray_sum = 0;
-            for (int dy = 0; dy < 2; dy++) {
-                for (int dx = 0; dx < 2; dx++) {
-                    color_t pixel = vbuf[(src_y + dy) * GB_VIDEO_PITCH + (src_x + dx)];
-                    uint32_t r = (pixel >> 16) & 0xFF;
-                    uint32_t g = (pixel >> 8) & 0xFF;
-                    uint32_t bl = pixel & 0xFF;
-                    gray_sum += r * 77 + g * 150 + bl * 29;
-                }
-            }
-            obs[sy * SCALED_WIDTH + sx] = (float)(gray_sum >> 10);
+    for (int y = 0; y < SCALED_HEIGHT; y++) {
+        for (int x = 0; x < SCALED_WIDTH; x++) {
+            color_t pixel = vbuf[y * GB_VIDEO_PITCH + x];
+            uint32_t r = (pixel >> 16) & 0xFF;
+            uint32_t g = (pixel >> 8) & 0xFF;
+            uint32_t bl = pixel & 0xFF;
+            obs[y * SCALED_WIDTH + x] = (float)((r * 77 + g * 150 + bl * 29) >> 8);
         }
     }
 }

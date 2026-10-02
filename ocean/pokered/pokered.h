@@ -115,16 +115,6 @@ struct Env {
     bool screen_obs_enabled;
     bool map_exhaustion_obs_enabled;
     float map_exhaustion_norm;
-    bool battle_status_obs_enabled;
-    bool progress_badges_bits_enabled;
-    bool hm_bag_obs_enabled;
-    bool blackout_map_obs_enabled;
-    bool bag_obs_enabled;
-    bool key_item_obs_enabled;
-    bool party_status_pp_obs_enabled;
-    bool battle_moveset_obs_enabled;
-    bool party_type_obs_enabled;
-    bool progress_money_obs_enabled;
     int exploration_cell_size;
     long weight_exploration_anneal_start;
     long weight_exploration_anneal_end;
@@ -234,6 +224,7 @@ void puf_init(Env* env, Dict* kwargs) {
     bc.route22_rival_beaten = dict_get(kwargs, "route22_rival_beaten") != 0.0;
     bc.route22_rival_2nd_beaten = dict_get(kwargs, "route22_rival_2nd_beaten") != 0.0;
     bc.nickname_prompt_enabled = dict_get(kwargs, "nickname_prompt_enabled") != 0.0;
+    bc.npc_text_enabled = dict_get(kwargs, "npc_text_enabled") != 0.0;
     env->verbose = dict_get(kwargs, "verbose") != 0.0;
     bc.verbose = env->verbose;
 
@@ -259,16 +250,6 @@ void puf_init(Env* env, Dict* kwargs) {
     env->screen_obs_enabled = dict_get(kwargs, "screen_obs_enabled") != 0.0;
     env->map_exhaustion_obs_enabled = dict_get(kwargs, "map_exhaustion_obs_enabled") != 0.0;
     env->map_exhaustion_norm = (float)dict_get(kwargs, "map_exhaustion_norm");
-    env->battle_status_obs_enabled = dict_get(kwargs, "battle_status_obs_enabled") != 0.0;
-    env->progress_badges_bits_enabled = dict_get(kwargs, "progress_badges_bits_enabled") != 0.0;
-    env->hm_bag_obs_enabled = dict_get(kwargs, "hm_bag_obs_enabled") != 0.0;
-    env->blackout_map_obs_enabled = dict_get(kwargs, "blackout_map_obs_enabled") != 0.0;
-    env->bag_obs_enabled = dict_get(kwargs, "bag_obs_enabled") != 0.0;
-    env->key_item_obs_enabled = dict_get(kwargs, "key_item_obs_enabled") != 0.0;
-    env->party_status_pp_obs_enabled = dict_get(kwargs, "party_status_pp_obs_enabled") != 0.0;
-    env->battle_moveset_obs_enabled = dict_get(kwargs, "battle_moveset_obs_enabled") != 0.0;
-    env->party_type_obs_enabled = dict_get(kwargs, "party_type_obs_enabled") != 0.0;
-    env->progress_money_obs_enabled = dict_get(kwargs, "progress_money_obs_enabled") != 0.0;
     if (env->map_exhaustion_norm <= 0.0f)
         env->map_exhaustion_norm = 1.0f;
     env->exploration_cell_size = (int)dict_get(kwargs, "exploration_cell_size");
@@ -498,20 +479,14 @@ void puf_render(Env* env) {
 
     if (env->show_obs_view && env->agents[0].observations) {
         const obs_t* obs = env->agents[0].observations;
-        for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
-            for (int sx = 0; sx < SCALED_WIDTH; sx++) {
-                uint8_t gray = (uint8_t)obs[sy * SCALED_WIDTH + sx];
-                for (int dy = 0; dy < 2; dy++) {
-                    for (int dx = 0; dx < 2; dx++) {
-                        int x = sx * 2 + dx;
-                        int y = sy * 2 + dy;
-                        uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
-                        out[0] = gray;
-                        out[1] = gray;
-                        out[2] = gray;
-                        out[3] = 255;
-                    }
-                }
+        for (int y = 0; y < SCALED_HEIGHT; y++) {
+            for (int x = 0; x < SCALED_WIDTH; x++) {
+                uint8_t gray = (uint8_t)obs[y * SCALED_WIDTH + x];
+                uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
+                out[0] = gray;
+                out[1] = gray;
+                out[2] = gray;
+                out[3] = 255;
             }
         }
 

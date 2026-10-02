@@ -127,6 +127,7 @@ static void redcore_reset_to_fixed_start(RcEnv *env, unsigned *rng) {
     *rng = *rng * 1664525u + 1013904223u;
     gamestate_init(gs, *rng);
     gs->nickname_prompt_enabled = env->cfg.nickname_prompt_enabled;
+    gs->npc_text_enabled = env->cfg.npc_text_enabled;
 
     PartyMon starter;
     memset(&starter, 0, sizeof(starter));
@@ -347,13 +348,8 @@ void rc_screen(void *impl, float *obs) {
     RcEnv *env = (RcEnv *)impl;
 
     redcore_render_frame(env, env->frame);
-    for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
-        const uint8_t *r0 = &env->frame[(sy * 2) * RC_FRAME_W];
-        const uint8_t *r1 = r0 + RC_FRAME_W;
-        for (int sx = 0; sx < SCALED_WIDTH; sx++)
-            obs[sy * SCALED_WIDTH + sx] =
-                (float)((r0[sx * 2] + r0[sx * 2 + 1] + r1[sx * 2] + r1[sx * 2 + 1]) >> 2);
-    }
+    for (int i = 0; i < SCALED_PIXELS; i++)
+        obs[i] = (float)env->frame[i];
 }
 
 bool rc_frame_rgba(void *impl, uint8_t *rgba) {

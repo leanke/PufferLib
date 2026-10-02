@@ -60,6 +60,7 @@ typedef struct {
     bool route22_rival_beaten, route22_rival_2nd_beaten;
 
     bool nickname_prompt_enabled;
+    bool npc_text_enabled;
     bool verbose;
     unsigned env_id;
 } PkBackendConfig;
