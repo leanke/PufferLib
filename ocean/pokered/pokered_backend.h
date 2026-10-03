@@ -13,10 +13,9 @@ extern "C" {
 #define PK_MAX_EVENTS 512
 
 typedef struct {
-    uint8_t species, level, status, type1, type2;
+    uint8_t species, level;
     uint16_t hp, max_hp;
     uint8_t moves[4];
-    uint8_t pp[4];
 } PkMon;
 
 typedef struct {
@@ -27,17 +26,26 @@ typedef struct {
     PkMon party[6];
     uint8_t pokedex_owned_count, pokedex_seen_count;
     float hp_fraction;
-    uint8_t fainted_count;
-    uint32_t money;
-    uint8_t last_blackout_map;
-    uint8_t num_bag_items;
-    uint8_t bag_qty[256];
 
-    int8_t in_battle;
-    uint8_t battle_type;
-    uint8_t selected_move;
+    // Cumulative whole-party blackouts the backend resolved inside a single step
+    // (redcore heals and warps the player immediately, so the 0-HP party is never
+    // visible afterwards). Stays 0 on the emulator, where the blackout plays out
+    // over many frames and shows up as hp_fraction == 0.
+    uint16_t blackouts;
+
+    // Cumulative battles won, for backends that resolve a battle's last turn and its
+    // end inside one step (redcore), where the enemy's 0 HP is never observable.
+    // Stays 0 on the emulator, which uses the 0-HP-enemy check instead.
+    uint16_t battles_won;
+
+    // Backends must leave everything below zeroed when it does not apply (no battle,
+    // empty party slots, empty bag slots): the emulator's RAM keeps stale values there.
+    int8_t in_battle;        // 1 = wild, 2 = trainer, otherwise no active battle
     PkMon battle_mon;
     PkMon enemy_mon;
+
+    uint8_t bag_count;
+    struct { uint8_t item, count; } bag[20];
 
     uint8_t events[PK_MAX_EVENTS];
 } PkSnapshot;
@@ -60,6 +68,8 @@ typedef struct {
     bool route22_rival_beaten, route22_rival_2nd_beaten;
 
     bool nickname_prompt_enabled;
+    bool npc_text_enabled;
+    bool npc_movement_enabled;
     bool verbose;
     unsigned env_id;
 } PkBackendConfig;

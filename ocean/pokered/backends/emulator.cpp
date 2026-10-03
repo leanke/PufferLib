@@ -10,9 +10,6 @@
 #include "../pokered_layout.h"
 #include "../pokered_backend.h"
 
-static_assert(PKRED_LAYOUT_NUM_BADGES == PKRED_NUM_BADGES, "pokered_layout.h badge count out of sync with ram_map.h");
-static_assert(PKRED_LAYOUT_BAG_TRACKED_ITEMS == PKRED_BAG_TRACKED_ITEMS && PKRED_LAYOUT_KEY_ITEMS == PKRED_KEY_ITEMS,
-              "pokered_layout.h bag layout out of sync with ram_map.h");
 static_assert(SCREEN_WIDTH == GB_SCREEN_WIDTH && BLOCKS_TALL == (GB_SCREEN_HEIGHT / BLOCK_PIXELS),
               "pokered_layout.h screen geometry out of sync with gambatte_wrapper.h");
 static_assert(PK_FRAME_W == GB_SCREEN_WIDTH && PK_FRAME_H == GB_SCREEN_HEIGHT, "frame size mismatch");
@@ -42,25 +39,17 @@ void fill_mon(PkMon *m, Emulator *emu, const uint8_t *b, uint16_t base) {
     m->level = rd(emu, b, base + offsetof(PkredPartyMon, level));
     m->hp = rd16(emu, b, base + offsetof(PkredPartyMon, hp_hi));
     m->max_hp = rd16(emu, b, base + offsetof(PkredPartyMon, max_hp_hi));
-    m->status = rd(emu, b, base + offsetof(PkredPartyMon, status));
-    m->type1 = rd(emu, b, base + offsetof(PkredPartyMon, type1));
-    m->type2 = rd(emu, b, base + offsetof(PkredPartyMon, type2));
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 4; k++)
         m->moves[k] = rd(emu, b, base + offsetof(PkredPartyMon, moves) + k);
-        m->pp[k] = rd(emu, b, base + offsetof(PkredPartyMon, pp) + k);
-    }
 }
 
 void fill_battler(PkMon *m, Emulator *emu, const uint8_t *b, uint16_t species, uint16_t hp, uint16_t maxhp,
-                  uint16_t status, uint16_t level, uint16_t type1, uint16_t type2) {
+                  uint16_t level) {
     memset(m, 0, sizeof(*m));
     m->species = rd(emu, b, species);
     m->hp = rd16(emu, b, hp);
     m->max_hp = rd16(emu, b, maxhp);
-    m->status = rd(emu, b, status);
     m->level = rd(emu, b, level);
-    m->type1 = rd(emu, b, type1);
-    m->type2 = rd(emu, b, type2);
 }
 
 int popcount_bytes(const uint8_t *b, uint16_t addr, int size) {
@@ -213,7 +202,9 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
     s->facing = read_mem(emu, PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION) / 4;
     s->badges = b[PKRED_ADDR_OBTAINED_BADGES - 0xD000];
     s->party_count = b[PKRED_ADDR_PARTY_COUNT - 0xD000];
-    for (int i = 0; i < 6; i++)
+    if (s->party_count > 6)
+        s->party_count = 6;
+    for (int i = 0; i < s->party_count; i++)
         fill_mon(&s->party[i], emu, b, PKRED_ADDR_PARTY_MON(i));
     s->pokedex_owned_count = (uint8_t)popcount_bytes(b, PKRED_ADDR_POKEDEX_OWNED, POKEDEX_BYTES);
     s->pokedex_seen_count = (uint8_t)popcount_bytes(b, PKRED_ADDR_POKEDEX_SEEN, POKEDEX_BYTES);
@@ -225,43 +216,24 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
         for (int i = 0; i < count; i++) {
             total_hp += s->party[i].hp;
             total_maxhp += s->party[i].max_hp;
-            if (s->party[i].hp == 0)
-                s->fainted_count++;
         }
         s->hp_fraction = (total_maxhp > 0) ? (float)total_hp / (float)total_maxhp : 1.0f;
     }
 
-    s->money = 0;
-    {
-        uint8_t h = b[PKRED_ADDR_PLAYER_MONEY - 0xD000], m = b[PKRED_ADDR_PLAYER_MONEY + 1 - 0xD000],
-                l = b[PKRED_ADDR_PLAYER_MONEY + 2 - 0xD000];
-        s->money = ((h >> 4) * 100000) + ((h & 0xF) * 10000) + ((m >> 4) * 1000) + ((m & 0xF) * 100) +
-                   ((l >> 4) * 10) + (l & 0xF);
-    }
-    s->last_blackout_map = b[PKRED_ADDR_LAST_BLACKOUT_MAP - 0xD000];
-    s->num_bag_items = b[PKRED_ADDR_NUM_BAG_ITEMS - 0xD000];
-    for (int i = 0; i < PKRED_BAG_ITEM_CAPACITY; i++) {
-        uint16_t addr = PKRED_ADDR_BAG_ITEMS + i * 2;
-        uint8_t id = b[addr - 0xD000];
-        if (id == 0xFF)
-            break;
-        s->bag_qty[id] = b[addr + 1 - 0xD000];
+    s->in_battle = (int8_t)b[PKRED_ADDR_IS_IN_BATTLE - 0xD000];
+    if (s->in_battle == 1 || s->in_battle == 2) {
+        fill_battler(&s->battle_mon, emu, b, PKRED_ADDR_BATTLE_MON_SPECIES, PKRED_ADDR_BATTLE_MON_HP,
+                     PKRED_ADDR_BATTLE_MON_MAX_HP, PKRED_ADDR_BATTLE_MON_LEVEL);
+        fill_battler(&s->enemy_mon, emu, b, PKRED_ADDR_ENEMY_MON_SPECIES, PKRED_ADDR_ENEMY_MON_HP,
+                     PKRED_ADDR_ENEMY_MON_MAX_HP, PKRED_ADDR_ENEMY_MON_LEVEL);
     }
 
-    s->in_battle = (int8_t)b[PKRED_ADDR_IS_IN_BATTLE - 0xD000];
-    s->battle_type = b[PKRED_ADDR_BATTLE_TYPE - 0xD000];
-    if (s->in_battle == 1 || s->in_battle == 2) {
-        s->selected_move = read_mem(emu, PKRED_ADDR_PLAYER_SELECTED_MOVE);
-        fill_battler(&s->battle_mon, emu, b, PKRED_ADDR_BATTLE_MON_SPECIES, PKRED_ADDR_BATTLE_MON_HP,
-                     PKRED_ADDR_BATTLE_MON_MAX_HP, PKRED_ADDR_BATTLE_MON_STATUS, PKRED_ADDR_BATTLE_MON_LEVEL,
-                     PKRED_ADDR_BATTLE_MON_TYPE1, PKRED_ADDR_BATTLE_MON_TYPE2);
-        for (int k = 0; k < 4; k++) {
-            s->battle_mon.moves[k] = rd(emu, b, PKRED_ADDR_BATTLE_MON_MOVES + k);
-            s->battle_mon.pp[k] = rd(emu, b, PKRED_ADDR_BATTLE_MON_PP + k);
-        }
-        fill_battler(&s->enemy_mon, emu, b, PKRED_ADDR_ENEMY_MON_SPECIES, PKRED_ADDR_ENEMY_MON_HP,
-                     PKRED_ADDR_ENEMY_MON_MAX_HP, PKRED_ADDR_ENEMY_MON_STATUS, PKRED_ADDR_ENEMY_MON_LEVEL,
-                     PKRED_ADDR_ENEMY_MON_TYPE1, PKRED_ADDR_ENEMY_MON_TYPE2);
+    s->bag_count = b[PKRED_ADDR_NUM_BAG_ITEMS - 0xD000];
+    if (s->bag_count > PKRED_BAG_ITEM_CAPACITY)
+        s->bag_count = PKRED_BAG_ITEM_CAPACITY;
+    for (int i = 0; i < s->bag_count; i++) {
+        s->bag[i].item = b[PKRED_ADDR_BAG_ITEMS + 2 * i - 0xD000];
+        s->bag[i].count = b[PKRED_ADDR_BAG_ITEMS + 2 * i + 1 - 0xD000];
     }
 
     for (size_t i = 0; i < EVENT_COUNT; ++i)

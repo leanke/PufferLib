@@ -28,16 +28,46 @@ static uint8_t rc_grid_cursor(uint8_t cursor, int button) {
     }
 }
 
-static bool rc_item_usable_in_battle(const GameState *gs, uint8_t item_id) {
-    if (item_is_poke_ball(item_id)) {
+// Bag entries shown in battle: the occupied slots followed by CANCEL. Three are visible at a time.
+#define RC_BAG_ROWS 3
+enum { RC_ITEM_MSG_NOT_TIME = 1, RC_ITEM_MSG_NO_EFFECT, RC_ITEM_MSG_BOX_FULL };
 
-        return gs->mode == GAME_MODE_BATTLE && !gs->battle.is_trainer_battle;
+static int rc_bag_entries(const GameState *gs) { return gs->bag.num_slots + 1; }
+
+// Items that ask "Use item on which POKeMON?" (what item_use_on_party_mon can do).
+static bool rc_item_is_medicine(uint8_t id) {
+    switch (id) {
+        case POTION: case SUPER_POTION: case HYPER_POTION: case MAX_POTION: case FULL_RESTORE:
+        case SODA_POP: case LEMONADE: case FRESH_WATER:
+        case REVIVE: case MAX_REVIVE:
+        case ANTIDOTE: case BURN_HEAL: case ICE_HEAL: case AWAKENING: case PARLYZ_HEAL: case FULL_HEAL:
+            return true;
+        default: return false;
     }
-    BattleMon scratch = gs->battle.player;
-    return item_use_on_battle_mon(&scratch, item_id) != ITEM_USE_NO_EFFECT;
+}
+
+// Moves the bag cursor one entry, scrolling the 3-row window only when it would leave it.
+static void rc_bag_move(RcEnv *env, int button) {
+    int entries = rc_bag_entries(&env->gstate);
+    if (button == PKRED_ACTION_UP && env->cursor_item > 0) {
+        env->cursor_item--;
+        if (env->cursor_item < env->bag_scroll) env->bag_scroll = env->cursor_item;
+    } else if (button == PKRED_ACTION_DOWN && env->cursor_item + 1 < entries) {
+        env->cursor_item++;
+        if (env->cursor_item >= env->bag_scroll + RC_BAG_ROWS) env->bag_scroll = (uint8_t)(env->cursor_item - (RC_BAG_ROWS - 1));
+    }
+}
+
+static void rc_bag_clamp(RcEnv *env) {
+    int entries = rc_bag_entries(&env->gstate);
+    if (env->cursor_item >= entries) env->cursor_item = (uint8_t)(entries - 1);
+    if (env->bag_scroll > env->cursor_item) env->bag_scroll = env->cursor_item;
+    if (env->cursor_item >= env->bag_scroll + RC_BAG_ROWS) env->bag_scroll = (uint8_t)(env->cursor_item - (RC_BAG_ROWS - 1));
 }
 
 static void rc_step_engine(RcEnv *env, Action a) { gamestate_step(&env->gstate, a); }
+static bool rc_party_input(RcEnv *env, int button, bool forced);
+static void rc_item_input(RcEnv *env, int button);
 
 static void rc_battle_button(RcEnv *env, int button) {
     GameState *gs = &env->gstate;
@@ -49,13 +79,16 @@ static void rc_battle_button(RcEnv *env, int button) {
             if (button == PKRED_ACTION_A) {
                 if (env->cursor_main == 0) {
                     env->battle_menu = RC_MENU_FIGHT;
-                    env->cursor_fight = 0;
+                    int n = rc_move_count(gs);
+                    env->cursor_fight = env->last_move_slot < n ? env->last_move_slot : 0;  // starts on the last used move
                 } else if (env->cursor_main == 1) {
                     env->battle_menu = RC_MENU_PARTY;
-                    env->cursor_party = gs->active_party_slot;
+                    env->party_stage = 0;
+                    env->cursor_party = env->cursor_party_saved < gs->party_count ? env->cursor_party_saved : 0;
                 } else if (env->cursor_main == 2 && gs->bag.num_slots > 0) {
                     env->battle_menu = RC_MENU_ITEM;
-                    env->cursor_item = 0;
+                    env->item_stage = 0;
+                    rc_bag_clamp(env);  // the bag remembers its cursor and scroll
                 } else if (env->cursor_main == 3) {
                     a.run = 1;
                     rc_step_engine(env, a);
@@ -74,6 +107,7 @@ static void rc_battle_button(RcEnv *env, int button) {
                 uint8_t slot = env->cursor_fight;
                 if (slot < n && gs->battle.player.moves[slot] != 0) {
                     env->player_selected_move = gs->battle.player.moves[slot];
+                    env->last_move_slot = slot;
                     a.move_slot = slot;
                     rc_step_engine(env, a);
                     env->battle_menu = RC_MENU_MAIN;
@@ -84,57 +118,157 @@ static void rc_battle_button(RcEnv *env, int button) {
             break;
         }
 
-        case RC_MENU_ITEM: {
-            int n = gs->bag.num_slots;
-            if (button == PKRED_ACTION_B) {
-                env->battle_menu = RC_MENU_MAIN;
-            } else if (button == PKRED_ACTION_A) {
-                if (env->cursor_item < n) {
-                    uint8_t id = gs->bag.slots[env->cursor_item].item_id;
-                    if (rc_item_usable_in_battle(gs, id)) {
-                        a.use_item = 1;
-                        a.item_id = id;
-                        rc_step_engine(env, a);
-                        env->battle_menu = RC_MENU_MAIN;
-                    }
-                }
-            } else if (rc_is_directional(button)) {
-                env->cursor_item = rc_list_cursor(env->cursor_item, n, button);
-            }
+        case RC_MENU_ITEM:
+            rc_item_input(env, button);
             break;
-        }
 
         case RC_MENU_PARTY:
-            if (button == PKRED_ACTION_B) {
+            if (rc_party_input(env, button, false)) {
                 env->battle_menu = RC_MENU_MAIN;
-            } else if (button == PKRED_ACTION_A) {
-                if (env->cursor_party < gs->party_count && env->cursor_party != gs->active_party_slot &&
-                    rc_party_mon(gs, env->cursor_party).box.hp > 0) {
-                    a.switch_party = 1;
-                    a.menu_choice = env->cursor_party;
-                    rc_step_engine(env, a);
-                    env->battle_menu = RC_MENU_MAIN;
-                }
-
-            } else if (rc_is_directional(button)) {
-                env->cursor_party = rc_list_cursor(env->cursor_party, gs->party_count, button);
+                env->cursor_main = 0;  // SendOutMon resets the main menu and bag cursors
+                env->cursor_item = 0;
+                env->bag_scroll = 0;
             }
             break;
     }
 }
 
-static void rc_switch_button(RcEnv *env, int button) {
+// The battle bag (DisplayBagMenu/UseBagItem), as measured on the emulator: a 3-row list ending in
+// CANCEL; A on a medicine asks which mon to use it on (B goes back to the list); an item with no
+// effect, or a key item, shows a message that A/B dismisses back to the list and costs nothing;
+// a Poke Ball thrown at a trainer's mon is wasted (and the turn passes).
+static void rc_item_input(RcEnv *env, int button) {
     GameState *gs = &env->gstate;
-    if (button == PKRED_ACTION_A) {
-        Action a;
-        memset(&a, 0, sizeof(a));
-        a.a = 1;
-        a.menu_choice = env->cursor_party;
-        rc_step_engine(env, a);
-    } else if (rc_is_directional(button)) {
-        env->cursor_party = rc_list_cursor(env->cursor_party, gs->party_count, button);
+    int n = gs->bag.num_slots;
+    switch (env->item_stage) {
+        case 0: {
+            if (button == PKRED_ACTION_B || (button == PKRED_ACTION_A && env->cursor_item >= n)) {
+                env->battle_menu = RC_MENU_MAIN;
+            } else if (button == PKRED_ACTION_A) {
+                uint8_t id = gs->bag.slots[env->cursor_item].item_id;
+                if (item_is_poke_ball(id)) {
+                    int before = bag_count(&gs->bag, id);
+                    Action a;
+                    memset(&a, 0, sizeof(a));
+                    a.use_item = 1;
+                    a.item_id = id;
+                    rc_step_engine(env, a);
+                    if (bag_count(&gs->bag, id) == before) {  // refused: party and box are both full
+                        env->item_stage = 2;
+                        env->item_msg = RC_ITEM_MSG_BOX_FULL;
+                    } else {
+                        env->battle_menu = RC_MENU_MAIN;
+                    }
+                } else if (rc_item_is_medicine(id)) {
+                    env->item_stage = 1;
+                    env->item_pending = id;
+                    env->cursor_party = env->cursor_party_saved < gs->party_count ? env->cursor_party_saved : 0;
+                } else {
+                    env->item_stage = 2;
+                    env->item_msg = RC_ITEM_MSG_NOT_TIME;
+                }
+            } else if (rc_is_directional(button)) {
+                rc_bag_move(env, button);
+            }
+            return;
+        }
+        case 1: {  // "Use item on which POKeMON?"
+            int count = gs->party_count;
+            if (button == PKRED_ACTION_B) {
+                env->item_stage = 0;
+            } else if (button == PKRED_ACTION_A && env->cursor_party < count) {
+                int slot = env->cursor_party;
+                env->cursor_party_saved = (uint8_t)slot;
+                bool effect;
+                if (slot == gs->active_party_slot) {
+                    BattleMon probe = gs->battle.player;
+                    effect = item_use_on_battle_mon(&probe, env->item_pending) != ITEM_USE_NO_EFFECT;
+                } else {
+                    PartyMon probe = gs->party[slot];
+                    effect = item_use_on_party_mon(&probe, env->item_pending) != ITEM_USE_NO_EFFECT;
+                }
+                if (!effect) {
+                    env->item_stage = 2;
+                    env->item_msg = RC_ITEM_MSG_NO_EFFECT;
+                } else {
+                    Action a;
+                    memset(&a, 0, sizeof(a));
+                    a.use_item = 1;
+                    a.item_id = env->item_pending;
+                    a.item_party_slot_plus1 = (uint8_t)(slot + 1);
+                    rc_step_engine(env, a);
+                    env->item_stage = 0;
+                    env->battle_menu = RC_MENU_MAIN;  // the turn passed; the command cursor stays on ITEM
+                }
+            } else if (rc_is_directional(button)) {
+                env->cursor_party = rc_list_cursor(env->cursor_party, count, button);
+            }
+            return;
+        }
+        default:  // a message: A or B returns to the bag list
+            if (button == PKRED_ACTION_A || button == PKRED_ACTION_B) env->item_stage = 0;
+            return;
     }
 }
+
+// The party list shared by the battle PKMN command and the forced switch after a faint
+// (DisplayPartyMenu): A on a mon opens the SWITCH/STATS/CANCEL box, SWITCH sends it out.
+// Returns true once a switch was actually performed.
+static bool rc_party_input(RcEnv *env, int button, bool forced) {
+    GameState *gs = &env->gstate;
+    int count = gs->party_count;
+    switch (env->party_stage) {
+        case 0:
+            if (button == PKRED_ACTION_B && !forced) {
+                env->cursor_party_saved = env->cursor_party;
+                env->battle_menu = RC_MENU_MAIN;
+            } else if (button == PKRED_ACTION_A && env->cursor_party < count) {
+                env->party_stage = 1;
+                env->cursor_action = 0;
+            } else if (rc_is_directional(button)) {
+                env->cursor_party = rc_list_cursor(env->cursor_party, count, button);
+            }
+            return false;
+        case 1:
+            if (button == PKRED_ACTION_B) {
+                env->party_stage = 0;
+            } else if (rc_is_directional(button)) {
+                env->cursor_action = rc_list_cursor(env->cursor_action, 3, button);
+            } else if (button == PKRED_ACTION_A) {
+                if (env->cursor_action == 1) {
+                    env->party_stage = 2;  // STATS
+                    return false;
+                }
+                env->party_stage = 0;
+                if (env->cursor_action != 0) return false;  // CANCEL
+                // SWITCH: refused (with a message to dismiss) for the mon already out and for fainted mons.
+                if (env->cursor_party >= count) return false;
+                if (env->cursor_party == gs->active_party_slot) {
+                    env->party_stage = 3;
+                    env->party_msg = 1;
+                    return false;
+                }
+                if (rc_party_mon(gs, env->cursor_party).box.hp == 0) {
+                    env->party_stage = 3;
+                    env->party_msg = 2;
+                    return false;
+                }
+                env->cursor_party_saved = env->cursor_party;
+                Action a;
+                memset(&a, 0, sizeof(a));
+                if (forced) a.a = 1; else a.switch_party = 1;
+                a.menu_choice = env->cursor_party;
+                rc_step_engine(env, a);
+                return true;
+            }
+            return false;
+        default:  // stats page (2) or a refusal message (3): A or B returns to the list
+            if (button == PKRED_ACTION_A || button == PKRED_ACTION_B) env->party_stage = 0;
+            return false;
+    }
+}
+
+static void rc_switch_button(RcEnv *env, int button) { rc_party_input(env, button, true); }
 
 static void rc_safari_button(RcEnv *env, int button) {
     if (button == PKRED_ACTION_A) {
@@ -216,14 +350,18 @@ static void redcore_menu_after_step(RcEnv *env) {
     if (gs->mode == env->prev_mode) return;
     if (gs->mode == GAME_MODE_BATTLE || gs->mode == GAME_MODE_SAFARI_BATTLE) {
         env->battle_menu = RC_MENU_MAIN;
-        env->cursor_main = 0;
-        if (env->prev_mode != GAME_MODE_BATTLE_SWITCH) env->player_selected_move = 0;
-    } else if (gs->mode == GAME_MODE_BATTLE_SWITCH) {
-        env->cursor_party = 0;
-
-        for (int i = 0; i < gs->party_count; i++) {
-            if (rc_party_mon(gs, i).box.hp > 0) { env->cursor_party = (uint8_t)i; break; }
+        env->party_stage = 0;
+        env->cursor_main = 0;  // SendOutMon (battle start, and after a forced switch) resets the main and bag cursors
+        env->cursor_item = 0;
+        env->bag_scroll = 0;
+        env->item_stage = 0;
+        if (env->prev_mode != GAME_MODE_BATTLE_SWITCH) {  // a new battle (InitBattleVariables)
+            env->player_selected_move = 0;
+            env->cursor_party_saved = 0;
         }
+    } else if (gs->mode == GAME_MODE_BATTLE_SWITCH) {
+        env->party_stage = 0;
+        env->cursor_party = env->cursor_party_saved < gs->party_count ? env->cursor_party_saved : 0;
     } else if (gs->mode == GAME_MODE_STARTER_SELECT) {
         env->cursor_party = 0;
     }

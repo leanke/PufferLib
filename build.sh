@@ -16,11 +16,6 @@ set -e
 #                                    # packs website 1M-cap policy + *_web.ini
 #                                    # copy build/web/ENV/* to ../docker/puffer.ai/docs/assets/ENV/
 #   ./build.sh breakout --profile    # Kernel profiling binary
-#   ./build.sh pokered --dual-head   # Splits the action+value head into
-#                                    # separate battle/overworld weight
-#                                    # matrices gated on in_battle (pokered
-#                                    # only); changes network shape, so it
-#                                    # requires training a fresh checkpoint.
 #   ./build.sh pokered --no-redcore  # Emulator backend only: skips cloning/building
 #                                    # vendor/redcore (--env.backend=redcore then errors).
 #   ./build.sh constellation         # Sweep dashboard -> ./seethestars
@@ -62,7 +57,6 @@ while [ $# -gt 0 ]; do
         --web)   MODE=web ;;
         --profile) MODE=profile ;;
         --cpu)   MODE=cpu ;;
-        --dual-head) POKERED_DUAL_HEAD=1 ;;
         --no-redcore) POKERED_NO_REDCORE=1 ;;
         *) echo "Error: unknown argument '$1'" && exit 1 ;;
     esac
@@ -152,9 +146,6 @@ EXTRA_CFLAGS=()
 if [ -n "${NVCC_EXTRA:-}" ]; then
     read -ra _nvcc_extra <<< "$NVCC_EXTRA"
     EXTRA_CFLAGS+=("${_nvcc_extra[@]}")
-fi
-if [ "${POKERED_DUAL_HEAD:-0}" = "1" ]; then
-    EXTRA_CFLAGS+=(-DPOKERED_DUAL_HEAD)
 fi
 SRC_FILE=""
 
@@ -265,25 +256,25 @@ elif [ "$ENV" = "pokered" ]; then
 
     # redcore backend: a from-scratch native C Pokemon Red reimplementation
     # (https://github.com/leanke/redcore) selected at runtime with
-    # [env] backend = "redcore". Vendored as a local clone (cloned from the
-    # local sibling checkout when present, else GitHub), built with its own
-    # CMake into libredcore_core.a. Its generic-named headers and #define dump
-    # must not leak into the trainer's translation unit, so the backend glue
-    # (backends/redcore.cpp) is compiled to its own object with the engine
-    # include paths instead of going through EXTRA_SRC/INCLUDES.
+    # [env] backend = "redcore". Vendored as a git clone in vendor/redcore (cloned
+    # over SSH on first build), built with its own CMake into libredcore_core.a.
+    # Its generic-named headers and #define dump must not leak into the trainer's
+    # translation unit, so the backend glue (backends/redcore.cpp) is compiled to
+    # its own object with the engine include paths instead of going through
+    # EXTRA_SRC/INCLUDES.
     if [ "${POKERED_NO_REDCORE:-0}" = "1" ]; then
         EXTRA_SRC="$EXTRA_SRC ocean/pokered/backends/redcore_stub.cpp"
     else
         REDCORE_DIR="vendor/redcore"
-        REDCORE_LOCAL="$HOME/loft/C/native/redcore"
-        REDCORE_REMOTE="https://github.com/leanke/redcore.git"
-        # Not pinned: a missing vendor/redcore is cloned at the tip of redcore's
-        # default branch; an existing one is used as-is (update it yourself).
+        REDCORE_REMOTE="git@github.com:leanke/redcore.git"
+        # Pinned: a missing vendor/redcore is cloned and checked out at this commit. An
+        # existing checkout is used as-is (develop and commit directly in vendor/redcore,
+        # push, then bump REDCORE_COMMIT here).
+        REDCORE_COMMIT="177789b5a4752a1c4732e0d3b40270c63490c9d4"
         if [ ! -d "$REDCORE_DIR/.git" ]; then
-            REDCORE_SRC="$REDCORE_REMOTE"
-            [ -d "$REDCORE_LOCAL/.git" ] && REDCORE_SRC="$REDCORE_LOCAL"
-            echo "Cloning redcore from $REDCORE_SRC ..."
-            git clone "$REDCORE_SRC" "$REDCORE_DIR"
+            echo "Cloning redcore from $REDCORE_REMOTE at $REDCORE_COMMIT ..."
+            git clone "$REDCORE_REMOTE" "$REDCORE_DIR"
+            git -C "$REDCORE_DIR" checkout --detach "$REDCORE_COMMIT"
         fi
         REDCORE_BUILD="$(pwd)/$REDCORE_DIR/build"
         # Always (re)configure/build: updating vendor/redcore must not leave a

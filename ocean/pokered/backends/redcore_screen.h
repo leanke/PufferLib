@@ -227,15 +227,6 @@ static void rc_blit_sprite_pose(uint8_t *f, const RedcoreAtlas *atlas, Direction
     }
 }
 
-static Direction rc_object_facing(const MapObjectEvent *o) {
-    if (o->movement != STAY) return DIR_SOUTH;
-    switch (o->range_or_direction) {
-        case UP: return DIR_NORTH;
-        case LEFT: return DIR_WEST;
-        case RIGHT: return DIR_EAST;
-        default: return DIR_SOUTH;
-    }
-}
 
 static void redcore_draw_overworld(const GameState *gs, uint8_t *f) {
     const MapInfo *info = &MAP_INFO[gs->player.map_id];
@@ -270,21 +261,17 @@ static void redcore_draw_overworld(const GameState *gs, uint8_t *f) {
         for (uint16_t i = 0; i < info->num_objects; i++) {
             uint16_t gi = (uint16_t)(info->objects_offset + i);
             const MapObjectEvent *o = &MAP_OBJECT_EVENTS[gi];
-            if (o->kind == OBJEVENT_ITEM && overworld_object_event_resolved(gs, (int16_t)gi)) continue;
-            int ox = o->x, oy = o->y;
-            for (int k = 0; k < gs->num_object_position_overrides; k++) {
-                if (gs->object_position_overrides[k].global_index == gi) {
-                    ox = gs->object_position_overrides[k].x;
-                    oy = gs->object_position_overrides[k].y;
-                }
-            }
+            if (!overworld_object_visible(gs, gi)) continue;
+            int16_t eox, eoy;
+            overworld_object_effective_pos(gs, gi, &eox, &eoy);
+            int ox = eox, oy = eoy;
             int sx = 64 + (ox - (int)gs->player.x) * 16;
             int sy = 60 + (oy - (int)gs->player.y) * 16;
             if (sx <= -16 || sx >= RC_FRAME_W || sy <= -16 || sy >= RC_FRAME_H) continue;
             const RedcoreAtlas *satlas =
                 (o->sprite_id < NUM_SPRITE_ASSETS) ? &g_redcore_sprite_atlas[o->sprite_id] : NULL;
             if (satlas && satlas->gray) {
-                rc_blit_sprite_pose(f, satlas, rc_object_facing(o), sx, sy);
+                rc_blit_sprite_pose(f, satlas, overworld_object_facing(gs, gi), sx, sy);
             } else {
                 rc_sprite(f, sx, sy, o->kind == OBJEVENT_ITEM ? 170 : 85);
             }
@@ -305,6 +292,10 @@ static float rc_battle_hp_frac(const BattleMon *m) {
 }
 
 static void rc_line(uint8_t *f, int x, int y, int w) { rc_fill(f, x, y, x + w, y + 3, 85); }
+
+static void rc_glyph(uint8_t *f, int x, int y, char c, uint8_t color);
+static void rc_text(uint8_t *f, int x, int y, const char *s, uint8_t color);
+static void rc_dialogue_box(uint8_t *f, const char *text, bool more);
 
 static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
     const GameState *gs = &env->gstate;
@@ -327,7 +318,8 @@ static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
         rc_hp_bar(f, 88, 76, 64, rc_battle_hp_frac(&bs->player));
     }
 
-    if (gs->mode == GAME_MODE_BATTLE_SWITCH || (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_PARTY)) {
+    if (gs->mode == GAME_MODE_BATTLE_SWITCH ||
+        (gs->mode == GAME_MODE_BATTLE && (env->battle_menu == RC_MENU_PARTY || (env->battle_menu == RC_MENU_ITEM && env->item_stage == 1)))) {
 
         memset(f, 255, RC_FRAME_PIXELS);
         for (int i = 0; i < gs->party_count && i < 6; i++) {
@@ -337,6 +329,34 @@ static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
             rc_line(f, 36, y + 2, 40);
             rc_hp_bar(f, 36, y + 9, 80, m.max_hp > 0 ? (float)m.box.hp / (float)m.max_hp : 0.0f);
             if (i == env->cursor_party) rc_cursor(f, 4, y + 5);
+        }
+        if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM) {
+            // "Use item on which POKeMON?" -- the same list, with the question in the text box.
+            rc_dialogue_box(f, "Use item on which POKeMON?", false);
+        } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_PARTY && env->party_stage == 0) {
+            rc_dialogue_box(f, "Choose a POKeMON.", false);
+        }
+        if (env->party_stage == 1) {  // SWITCH / STATS / CANCEL box, as in the real party menu
+            rc_box(f, 88, 78, RC_FRAME_W, RC_FRAME_H, 255, 0);
+            static const char *const LABELS[3] = {"SWITCH", "STATS", "CANCEL"};
+            for (int i = 0; i < 3; i++) {
+                rc_text(f, 104, 86 + i * 16, LABELS[i], 0);
+                if (i == env->cursor_action) rc_glyph(f, 94, 86 + i * 16, '>', 0);
+            }
+        } else if (env->party_stage == 3) {
+            rc_dialogue_box(f, env->party_msg == 1 ? "That POKeMON is already out!" : "There's no will to fight!", true);
+        } else if (env->party_stage == 2) {  // stats page
+            memset(f, 255, RC_FRAME_PIXELS);
+            PartyMon m = rc_party_mon(gs, env->cursor_party < gs->party_count ? env->cursor_party : 0);
+            char line[40];
+            snprintf(line, sizeof(line), "HP %u/%u", m.box.hp, m.max_hp);
+            rc_text(f, 8, 8, line, 0);
+            snprintf(line, sizeof(line), "LV %u", m.level);
+            rc_text(f, 8, 22, line, 0);
+            snprintf(line, sizeof(line), "ATK %u  DEF %u", m.attack, m.defense);
+            rc_text(f, 8, 36, line, 0);
+            snprintf(line, sizeof(line), "SPD %u  SPC %u", m.speed, m.special);
+            rc_text(f, 8, 50, line, 0);
         }
         return;
     }
@@ -362,15 +382,32 @@ static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
             rc_line(f, 48, y, w);
             if (i == env->cursor_fight) rc_cursor(f, 38, y - 2);
         }
-    } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM) {
-        rc_box(f, 32, 104, RC_FRAME_W, RC_FRAME_H, 255, 0);
-        int n = gs->bag.num_slots;
-        int first = env->cursor_item >= 4 ? env->cursor_item - 3 : 0;
-        for (int i = first; i < n && i < first + 4; i++) {
-            int y = 108 + (i - first) * 9;
-            rc_line(f, 48, y, 8 + (gs->bag.slots[i].item_id % 32));
-            rc_line(f, 120, y, 4 + (gs->bag.slots[i].count % 32));
-            if (i == env->cursor_item) rc_cursor(f, 38, y - 2);
+    } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM && env->item_stage != 1) {
+        // The bag: a 3-row list ending in CANCEL, item name over its "x quantity".
+        rc_box(f, 32, 16, RC_FRAME_W, 104, 255, 0);
+        int entries = gs->bag.num_slots + 1;
+        for (int row = 0; row < 3; row++) {
+            int i = env->bag_scroll + row;
+            if (i >= entries) break;
+            int y = 26 + row * 24;
+            if (i == gs->bag.num_slots) {
+                rc_text(f, 52, y, "CANCEL", 0);
+            } else {
+                char name[24], qty[8];
+                rc_item_name(gs->bag.slots[i].item_id, name, sizeof(name));
+                snprintf(qty, sizeof(qty), "x%u", gs->bag.slots[i].count);
+                rc_text(f, 52, y, name, 0);
+                rc_text(f, 112, y + 10, qty, 0);
+            }
+            if (i == env->cursor_item) rc_glyph(f, 40, y, '>', 0);
+        }
+        if (env->bag_scroll > 0) rc_glyph(f, 148, 20, '^', 0);
+        if (env->bag_scroll + 3 < entries) rc_glyph(f, 148, 96, 'v', 0);
+        if (env->item_stage == 2) {
+            const char *msg = env->item_msg == RC_ITEM_MSG_NO_EFFECT ? "It won't have any effect."
+                              : env->item_msg == RC_ITEM_MSG_BOX_FULL ? "The POKeMON BOX is full! Can't use that item now!"
+                                                                       : "OAK: This isn't the time to use that!";
+            rc_dialogue_box(f, msg, true);
         }
     }
 }
@@ -381,6 +418,199 @@ static void redcore_draw_starter_select(const RcEnv *env, uint8_t *f) {
         rc_box(f, 20 + i * 44, 60, 44 + i * 44, 84, 85, 0);
         if (i == env->cursor_party) rc_cursor(f, 29 + i * 44, 48);
     }
+}
+
+
+// ---- Text rendering ---------------------------------------------------------
+// Classic 5x7 ASCII font (0x20..0x7E), one byte per column, LSB = top row
+// (descenders use bit 7). Glyph advance is 6 px. Lets the synthesized frame show
+// real dialogue / naming-screen text instead of placeholder bars.
+#define RC_FONT_W 6
+static const uint8_t RC_FONT5X7[95][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00},
+    {0x00, 0x00, 0x5F, 0x00, 0x00},
+    {0x00, 0x07, 0x00, 0x07, 0x00},
+    {0x14, 0x7F, 0x14, 0x7F, 0x14},
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12},
+    {0x23, 0x13, 0x08, 0x64, 0x62},
+    {0x36, 0x49, 0x56, 0x20, 0x50},
+    {0x00, 0x08, 0x07, 0x03, 0x00},
+    {0x00, 0x1C, 0x22, 0x41, 0x00},
+    {0x00, 0x41, 0x22, 0x1C, 0x00},
+    {0x2A, 0x1C, 0x7F, 0x1C, 0x2A},
+    {0x08, 0x08, 0x3E, 0x08, 0x08},
+    {0x00, 0x80, 0x70, 0x30, 0x00},
+    {0x08, 0x08, 0x08, 0x08, 0x08},
+    {0x00, 0x00, 0x60, 0x60, 0x00},
+    {0x20, 0x10, 0x08, 0x04, 0x02},
+    {0x3E, 0x51, 0x49, 0x45, 0x3E},
+    {0x00, 0x42, 0x7F, 0x40, 0x00},
+    {0x72, 0x49, 0x49, 0x49, 0x46},
+    {0x21, 0x41, 0x49, 0x4D, 0x33},
+    {0x18, 0x14, 0x12, 0x7F, 0x10},
+    {0x27, 0x45, 0x45, 0x45, 0x39},
+    {0x3C, 0x4A, 0x49, 0x49, 0x31},
+    {0x41, 0x21, 0x11, 0x09, 0x07},
+    {0x36, 0x49, 0x49, 0x49, 0x36},
+    {0x46, 0x49, 0x49, 0x29, 0x1E},
+    {0x00, 0x00, 0x14, 0x00, 0x00},
+    {0x00, 0x40, 0x34, 0x00, 0x00},
+    {0x00, 0x08, 0x14, 0x22, 0x41},
+    {0x14, 0x14, 0x14, 0x14, 0x14},
+    {0x00, 0x41, 0x22, 0x14, 0x08},
+    {0x02, 0x01, 0x59, 0x09, 0x06},
+    {0x3E, 0x41, 0x5D, 0x59, 0x4E},
+    {0x7C, 0x12, 0x11, 0x12, 0x7C},
+    {0x7F, 0x49, 0x49, 0x49, 0x36},
+    {0x3E, 0x41, 0x41, 0x41, 0x22},
+    {0x7F, 0x41, 0x41, 0x41, 0x3E},
+    {0x7F, 0x49, 0x49, 0x49, 0x41},
+    {0x7F, 0x09, 0x09, 0x09, 0x01},
+    {0x3E, 0x41, 0x41, 0x51, 0x73},
+    {0x7F, 0x08, 0x08, 0x08, 0x7F},
+    {0x00, 0x41, 0x7F, 0x41, 0x00},
+    {0x20, 0x40, 0x41, 0x3F, 0x01},
+    {0x7F, 0x08, 0x14, 0x22, 0x41},
+    {0x7F, 0x40, 0x40, 0x40, 0x40},
+    {0x7F, 0x02, 0x1C, 0x02, 0x7F},
+    {0x7F, 0x04, 0x08, 0x10, 0x7F},
+    {0x3E, 0x41, 0x41, 0x41, 0x3E},
+    {0x7F, 0x09, 0x09, 0x09, 0x06},
+    {0x3E, 0x41, 0x51, 0x21, 0x5E},
+    {0x7F, 0x09, 0x19, 0x29, 0x46},
+    {0x26, 0x49, 0x49, 0x49, 0x32},
+    {0x03, 0x01, 0x7F, 0x01, 0x03},
+    {0x3F, 0x40, 0x40, 0x40, 0x3F},
+    {0x1F, 0x20, 0x40, 0x20, 0x1F},
+    {0x3F, 0x40, 0x38, 0x40, 0x3F},
+    {0x63, 0x14, 0x08, 0x14, 0x63},
+    {0x03, 0x04, 0x78, 0x04, 0x03},
+    {0x61, 0x59, 0x49, 0x4D, 0x43},
+    {0x00, 0x7F, 0x41, 0x41, 0x41},
+    {0x02, 0x04, 0x08, 0x10, 0x20},
+    {0x00, 0x41, 0x41, 0x41, 0x7F},
+    {0x04, 0x02, 0x01, 0x02, 0x04},
+    {0x40, 0x40, 0x40, 0x40, 0x40},
+    {0x00, 0x03, 0x07, 0x08, 0x00},
+    {0x20, 0x54, 0x54, 0x78, 0x40},
+    {0x7F, 0x28, 0x44, 0x44, 0x38},
+    {0x38, 0x44, 0x44, 0x44, 0x28},
+    {0x38, 0x44, 0x44, 0x28, 0x7F},
+    {0x38, 0x54, 0x54, 0x54, 0x18},
+    {0x00, 0x08, 0x7E, 0x09, 0x02},
+    {0x18, 0xA4, 0xA4, 0x9C, 0x78},
+    {0x7F, 0x08, 0x04, 0x04, 0x78},
+    {0x00, 0x44, 0x7D, 0x40, 0x00},
+    {0x20, 0x40, 0x40, 0x3D, 0x00},
+    {0x7F, 0x10, 0x28, 0x44, 0x00},
+    {0x00, 0x41, 0x7F, 0x40, 0x00},
+    {0x7C, 0x04, 0x78, 0x04, 0x78},
+    {0x7C, 0x08, 0x04, 0x04, 0x78},
+    {0x38, 0x44, 0x44, 0x44, 0x38},
+    {0xFC, 0x18, 0x24, 0x24, 0x18},
+    {0x18, 0x24, 0x24, 0x18, 0xFC},
+    {0x7C, 0x08, 0x04, 0x04, 0x08},
+    {0x48, 0x54, 0x54, 0x54, 0x24},
+    {0x04, 0x04, 0x3F, 0x44, 0x24},
+    {0x3C, 0x40, 0x40, 0x20, 0x7C},
+    {0x1C, 0x20, 0x40, 0x20, 0x1C},
+    {0x3C, 0x40, 0x30, 0x40, 0x3C},
+    {0x44, 0x28, 0x10, 0x28, 0x44},
+    {0x4C, 0x90, 0x90, 0x90, 0x7C},
+    {0x44, 0x64, 0x54, 0x4C, 0x44},
+    {0x00, 0x08, 0x36, 0x41, 0x00},
+    {0x00, 0x00, 0x77, 0x00, 0x00},
+    {0x00, 0x41, 0x36, 0x08, 0x00},
+    {0x02, 0x01, 0x02, 0x04, 0x02}
+};
+
+static void rc_glyph(uint8_t *f, int x, int y, char c, uint8_t color) {
+    if (c < 0x20 || c > 0x7E) c = '?';
+    const uint8_t *g = RC_FONT5X7[c - 0x20];
+    for (int col = 0; col < 5; col++)
+        for (int row = 0; row < 8; row++) {
+            int px = x + col, py = y + row;
+            if ((g[col] >> row) & 1 && px >= 0 && px < RC_FRAME_W && py >= 0 && py < RC_FRAME_H)
+                f[py * RC_FRAME_W + px] = color;
+        }
+}
+
+static void rc_text(uint8_t *f, int x, int y, const char *s, uint8_t color) {
+    for (; *s; s++, x += RC_FONT_W) rc_glyph(f, x, y, *s, color);
+}
+
+// Word-wraps `s` (honoring '\n') to `cols` columns and draws the last `max_lines`
+// lines, so a long dialogue scrolls like the real text box.
+static void rc_text_wrapped(uint8_t *f, int x, int y, int line_h, int cols, int max_lines, const char *s) {
+    char lines[16][40];
+    int nlines = 0, len = 0;
+    char word[40];
+    int wlen = 0;
+    lines[0][0] = '\0';
+    #define RC_NEWLINE() do { if (nlines < 15) nlines++; lines[nlines][0] = '\0'; len = 0; } while (0)
+    for (const char *p = s;; p++) {
+        char c = *p;
+        if (c == ' ' || c == '\n' || c == '\0') {
+            if (wlen > 0) {
+                if (len > 0 && len + 1 + wlen > cols) RC_NEWLINE();
+                if (len > 0) lines[nlines][len++] = ' ';
+                memcpy(lines[nlines] + len, word, wlen);
+                len += wlen;
+                lines[nlines][len] = '\0';
+                wlen = 0;
+            }
+            if (c == '\n') RC_NEWLINE();
+            if (c == '\0') break;
+        } else if (wlen < cols) {
+            word[wlen++] = c;
+        }
+    }
+    #undef RC_NEWLINE
+    int first = nlines + 1 > max_lines ? nlines + 1 - max_lines : 0;
+    for (int i = first; i <= nlines; i++) rc_text(f, x, y + (i - first) * line_h, lines[i], 0);
+}
+
+// Bottom dialogue box shared by the overworld text box and the nickname prompt.
+static void rc_dialogue_box(uint8_t *f, const char *text, bool more) {
+    rc_box(f, 0, 96, RC_FRAME_W, RC_FRAME_H, 255, 0);
+    rc_text_wrapped(f, 8, 103, 12, 24, 3, text);
+    if (more) rc_glyph(f, 148, 134, 'v', 0);
+}
+
+static void redcore_draw_textbox(const GameState *gs, uint8_t *f) {
+    rc_dialogue_box(f, gs->text.buffer, gs->text.waiting_for_input);
+}
+
+// Naming flow (GAME_MODE_NAMING): the YES/NO nickname question over the
+// overworld, then the 9-column keyboard with the typed name above it.
+static void redcore_draw_naming(const GameState *gs, uint8_t *f) {
+    const NamingState *n = &gs->naming;
+    if (n->stage == NAMING_STAGE_ASK) {
+        rc_dialogue_box(f, "Do you want to give a nickname?", false);
+        rc_box(f, 104, 56, RC_FRAME_W, 96, 255, 0);
+        rc_text(f, 124, 66, "YES", 0);
+        rc_text(f, 124, 80, "NO", 0);
+        rc_glyph(f, 112, n->ask_cursor == 0 ? 66 : 80, '>', 0);
+        return;
+    }
+    memset(f, 255, RC_FRAME_PIXELS);
+    char name[40];
+    snprintf(name, sizeof(name), "NAME: %s_", n->buffer);
+    rc_text(f, 8, 6, name, 0);
+    for (int r = 0; r < NAMING_GRID_ROWS - 1; r++) {
+        for (int c = 0; c < NAMING_GRID_COLS; c++) {
+            int x = 10 + c * 16, y = 24 + r * 14;
+            bool end = r == NAMING_END_ROW && c == NAMING_END_COL;
+            char ch = naming_grid_char(n->lowercase, r, c);
+            bool sel = r == n->row && c == n->col;
+            if (sel) rc_fill(f, x - 3, y - 2, x + (end ? 15 : 9), y + 10, 0);
+            if (end) rc_text(f, x, y, "ED", sel ? 255 : 0);
+            else rc_glyph(f, x, y, ch < 0x20 ? '?' : ch, sel ? 255 : 0);
+        }
+    }
+    int cy = 24 + NAMING_CASE_ROW * 14;
+    if (n->row == NAMING_CASE_ROW) rc_glyph(f, 10, cy, '>', 0);
+    rc_text(f, 22, cy, n->lowercase ? "UPPER CASE" : "lower case", 0);
 }
 
 static void redcore_render_frame(const RcEnv *env, uint8_t *f) {
@@ -395,11 +625,13 @@ static void redcore_render_frame(const RcEnv *env, uint8_t *f) {
             redcore_draw_starter_select(env, f);
             break;
         default:
-            redcore_draw_overworld(gs, f);
-            if (gs->mode == GAME_MODE_TEXTBOX) {
-                rc_box(f, 0, 96, RC_FRAME_W, RC_FRAME_H, 255, 0);
-                for (int l = 0; l < 3; l++) rc_line(f, 10, 106 + l * 12, 120 - l * 20);
+            if (gs->mode == GAME_MODE_NAMING && gs->naming.stage == NAMING_STAGE_KEYBOARD) {
+                redcore_draw_naming(gs, f);
+                break;
             }
+            redcore_draw_overworld(gs, f);
+            if (gs->mode == GAME_MODE_TEXTBOX) redcore_draw_textbox(gs, f);
+            else if (gs->mode == GAME_MODE_NAMING) redcore_draw_naming(gs, f);
             break;
     }
 }
