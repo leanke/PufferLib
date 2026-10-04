@@ -9,6 +9,7 @@
 //   events       each newly completed story/trainer event (flat, 1 per event)
 //   battling     a battle was won (enemy fainted, party still standing)
 //   death        party wiped out (applied by the step loop, see puf_step_body)
+//   fleeing      a battle was escaped by running (a penalty, off when weight_fleeing = 0)
 // Each signal_*() returns an unscaled amount; calculate_rewards() applies the
 // weight and records the weighted total in env->totals for logging.
 
@@ -96,6 +97,27 @@ static float signal_battling(Env *env) {
   return 1.0f;
 }
 
+// 1 on the step a battle ends because the player ran away. Redcore counts escapes
+// itself; on the emulator wEscapedFromBattle is set while the "Got away safely!" text
+// is still up, so it is latched during the battle and read when the battle ends.
+static float signal_fleeing(Env *env) {
+  const PkSnapshot *cur = &env->cur, *prev = &env->prev;
+  if (is_battle_active(cur) && cur->escaped)
+    env->escape_latched = true;
+  bool fled = cur->battles_fled != prev->battles_fled;
+  if (is_battle_active(prev) && !is_battle_active(cur)) {
+    fled = fled || env->escape_latched;
+    env->escape_latched = false;
+  } else if (!is_battle_active(cur)) {
+    env->escape_latched = false;
+  }
+  if (!fled)
+    return 0.0f;
+  if (env->verbose)
+    printf("Ran from a battle\n");
+  return 1.0f;
+}
+
 // Counts events completed this step (each pays the same) and hands the
 // non-trainer ones to the backend so it can capture milestone save states.
 static float signal_events(Env *env) {
@@ -138,6 +160,7 @@ static float calculate_rewards(Env *env) {
   float leveling = env->weight_leveling * signal_leveling(env);
   float events = env->weight_events * signal_events(env);
   float battling = env->weight_battling * signal_battling(env);
+  float fleeing = env->weight_fleeing * signal_fleeing(env);
 
   env->totals.explore += explore;
   env->totals.catching += catching;
@@ -145,9 +168,10 @@ static float calculate_rewards(Env *env) {
   env->totals.leveling += leveling;
   env->totals.events += events;
   env->totals.battling += battling;
+  env->totals.fleeing += fleeing;
 
   env->prev = env->cur;
-  return explore + catching + seeing + leveling + events + battling;
+  return explore + catching + seeing + leveling + events + battling - fleeing;
 }
 
 #endif

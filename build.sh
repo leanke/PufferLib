@@ -16,8 +16,10 @@ set -e
 #                                    # packs website 1M-cap policy + *_web.ini
 #                                    # copy build/web/ENV/* to ../docker/puffer.ai/docs/assets/ENV/
 #   ./build.sh breakout --profile    # Kernel profiling binary
-#   ./build.sh pokered --no-redcore  # Emulator backend only: skips cloning/building
-#                                    # vendor/redcore (--env.backend=redcore then errors).
+#   ./build.sh pokered --no-redcore  # Skips cloning/building vendor/redcore
+#                                    # (--env.backend=redcore then errors).
+#   ./build.sh pokered --no-native   # Skips cloning/building vendor/pokered-native
+#                                    # (--env.backend=native then errors).
 #   ./build.sh constellation         # Sweep dashboard -> ./seethestars
 #   ./build.sh cache_data            # Sweep log cache -> ./cache_data
 #   ./build.sh trailer               # 5.0 trailer -> ./resources/trailer/trailer (also exports diagrams)
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
         --profile) MODE=profile ;;
         --cpu)   MODE=cpu ;;
         --no-redcore) POKERED_NO_REDCORE=1 ;;
+        --no-native) POKERED_NO_NATIVE=1 ;;
         *) echo "Error: unknown argument '$1'" && exit 1 ;;
     esac
     shift
@@ -267,14 +270,12 @@ elif [ "$ENV" = "pokered" ]; then
     else
         REDCORE_DIR="vendor/redcore"
         REDCORE_REMOTE="git@github.com:leanke/redcore.git"
-        # Pinned: a missing vendor/redcore is cloned and checked out at this commit. An
-        # existing checkout is used as-is (develop and commit directly in vendor/redcore,
-        # push, then bump REDCORE_COMMIT here).
-        REDCORE_COMMIT="177789b5a4752a1c4732e0d3b40270c63490c9d4"
+        # Not pinned: a missing vendor/redcore is cloned at the tip of redcore's
+        # default branch; an existing one is used as-is (develop and commit
+        # directly in vendor/redcore, then push).
         if [ ! -d "$REDCORE_DIR/.git" ]; then
-            echo "Cloning redcore from $REDCORE_REMOTE at $REDCORE_COMMIT ..."
+            echo "Cloning redcore from $REDCORE_REMOTE ..."
             git clone "$REDCORE_REMOTE" "$REDCORE_DIR"
-            git -C "$REDCORE_DIR" checkout --detach "$REDCORE_COMMIT"
         fi
         REDCORE_BUILD="$(pwd)/$REDCORE_DIR/build"
         # Always (re)configure/build: updating vendor/redcore must not leave a
@@ -288,6 +289,38 @@ elif [ "$ENV" = "pokered" ]; then
             -I./$REDCORE_DIR/src/core -I./$REDCORE_DIR/src/gen \
             -c ocean/pokered/backends/redcore.cpp -o "$REDCORE_OBJ"
         LINK_ARCHIVES+=("$REDCORE_OBJ" "$REDCORE_BUILD/libredcore_core.a")
+    fi
+
+    # native backend: pokered-native (https://github.com/leanke/pokered-native), a C port of
+    # the pokered disassembly that keeps the game's WRAM layout, selected at runtime with
+    # [env] backend = "native". Vendored as a git clone in vendor/pokered-native (cloned over
+    # SSH on first build). Upstream's top-level CMake needs its deps/ submodules, so
+    # backends/native/CMakeLists.txt builds just the library into libnative_core.a, with the
+    # source list read from upstream's own CMake files. Like redcore, the glue
+    # (backends/native.c) is its own object so the engine's headers and macros (g_wram,
+    # hram, ...) stay out of the trainer's translation unit.
+    if [ "${POKERED_NO_NATIVE:-0}" = "1" ]; then
+        EXTRA_SRC="$EXTRA_SRC ocean/pokered/backends/native_stub.cpp"
+    else
+        NATIVE_DIR="vendor/pokered-native"
+        NATIVE_REMOTE="git@github.com:leanke/pokered-native.git"
+        # Not pinned: a missing vendor/pokered-native is cloned at the tip of its default
+        # branch; an existing one is used as-is.
+        if [ ! -d "$NATIVE_DIR/.git" ]; then
+            echo "Cloning pokered-native from $NATIVE_REMOTE ..."
+            git clone "$NATIVE_REMOTE" "$NATIVE_DIR"
+        fi
+        NATIVE_BUILD="$(pwd)/$NATIVE_DIR/build_native"
+        echo "Building libnative_core.a ..."
+        cmake -S ocean/pokered/backends/native -B "$NATIVE_BUILD" -DNATIVE_ROOT="$(pwd)/$NATIVE_DIR" \
+            -DCMAKE_BUILD_TYPE=Release >/dev/null
+        cmake --build "$NATIVE_BUILD" --target native_core -j"$(nproc)"
+        NATIVE_OBJ="$NATIVE_BUILD/pokered_native_backend.o"
+        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec \
+            -I./src -I./vendor -I./ocean/pokered \
+            -I./$NATIVE_DIR/include -I./$NATIVE_DIR/data \
+            -c ocean/pokered/backends/native.c -o "$NATIVE_OBJ"
+        LINK_ARCHIVES+=("$NATIVE_OBJ" "$NATIVE_BUILD/libnative_core.a")
     fi
     EXTRA_CFLAGS+=(-D__LIBRETRO__ -DHAVE_CSTDINT)
     # OpenSSL: TLS client used by pokered_stream.h.

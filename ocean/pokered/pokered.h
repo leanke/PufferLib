@@ -3,13 +3,13 @@
 
 // Pokemon Red environment.
 //
-// One Env serves two game backends (Gambatte emulator / redcore) behind
+// One Env serves three game backends (Gambatte emulator / redcore / native) behind
 // pokered_backend.h. This file owns the episode lifecycle; the pieces it
 // delegates to:
 //   pokered_layout.h        observation layout + action enum (shared with pokered.cu)
 //   pokered_visited.h       bit-packed visited sets
 //   pokered_observations.h  PkSnapshot -> observation vector
-//   pokered_rewards.h       the six reward signals
+//   pokered_rewards.h       the reward signals
 //   pokered_render.h        raylib window / keyboard play
 
 #include <math.h>
@@ -36,7 +36,7 @@ typedef float obs_t;
 
 // Weighted reward totals for the current episode (what each term contributed).
 typedef struct {
-    float explore, catching, seeing, leveling, events, battling, death;
+    float explore, catching, seeing, leveling, events, battling, death, fleeing;
 } RewardTotals;
 
 struct Log {
@@ -87,6 +87,7 @@ struct Env {
 
     // Death / reset handling.
     bool party_wiped;                // latch so one wipe-out is penalised once
+    bool escape_latched;             // emulator: "got away" seen during the current battle
     int blackout_count;
     bool reset_from_milestone;
     int32_t max_episode_length;
@@ -100,6 +101,7 @@ struct Env {
     float weight_events;
     float weight_battling;
     float weight_death;
+    float weight_fleeing;            // penalty per battle run from (0 = off)
     int exploration_cell_size;
     bool exploration_death_scaling_enabled;
 
@@ -178,6 +180,7 @@ static void read_reward_config(Env *env, Dict *kw) {
     env->weight_events = kw_float(kw, "weight_events");
     env->weight_battling = kw_float(kw, "weight_battling");
     env->weight_death = kw_float(kw, "weight_death");
+    env->weight_fleeing = kw_float(kw, "weight_fleeing");
     env->exploration_cell_size = kw_int(kw, "exploration_cell_size");
     if (env->exploration_cell_size <= 0)
         env->exploration_cell_size = 1;
@@ -241,8 +244,14 @@ static const PkBackend *select_backend(Dict *kw) {
             fprintf(stderr, "pokered: built with --no-redcore; env.backend=redcore is unavailable\n");
             exit(1);
         }
+    } else if (strcmp(name, "native") == 0) {
+        be = pk_backend_native();
+        if (!be) {
+            fprintf(stderr, "pokered: built with --no-native; env.backend=native is unavailable\n");
+            exit(1);
+        }
     } else {
-        fprintf(stderr, "pokered: unknown env.backend '%s' (expected emulator or redcore)\n", name);
+        fprintf(stderr, "pokered: unknown env.backend '%s' (expected emulator, redcore or native)\n", name);
         exit(1);
     }
     return be;
@@ -298,6 +307,7 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->score = 0.0f;
     env->prev_action = -1;
     env->party_wiped = false;
+    env->escape_latched = false;
     memset(&env->totals, 0, sizeof(env->totals));
     memcpy(env->prev_events, env->cur.events, EVENT_COUNT);
 
@@ -438,6 +448,7 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "events_signal", log->reward.events);
     dict_set(out, "battling_signal", log->reward.battling);
     dict_set(out, "death_signal", log->reward.death);
+    dict_set(out, "fleeing_signal", log->reward.fleeing);
 
     dict_set(out, "milestone_pool_size", log->milestone_pool_size);
     dict_set(out, "reset_from_milestone", log->reset_from_milestone);

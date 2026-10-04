@@ -224,6 +224,7 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
     if (s->in_battle == 1 || s->in_battle == 2) {
         fill_battler(&s->battle_mon, emu, b, PKRED_ADDR_BATTLE_MON_SPECIES, PKRED_ADDR_BATTLE_MON_HP,
                      PKRED_ADDR_BATTLE_MON_MAX_HP, PKRED_ADDR_BATTLE_MON_LEVEL);
+        s->escaped = b[PKRED_ADDR_ESCAPED_FROM_BATTLE - 0xD000];
         fill_battler(&s->enemy_mon, emu, b, PKRED_ADDR_ENEMY_MON_SPECIES, PKRED_ADDR_ENEMY_MON_HP,
                      PKRED_ADDR_ENEMY_MON_MAX_HP, PKRED_ADDR_ENEMY_MON_LEVEL);
     }

@@ -356,6 +356,7 @@ void rc_snapshot(void *impl, PkSnapshot *s) {
     s->hp_fraction = rc_party_hp_fraction(gs);
     s->blackouts = gs->blackouts;
     s->battles_won = gs->battles_won;
+    s->battles_fled = gs->battles_fled;
 
     if (rc_in_battle(gs)) {
 

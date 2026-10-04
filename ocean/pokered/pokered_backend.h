@@ -38,6 +38,12 @@ typedef struct {
     // Stays 0 on the emulator, which uses the 0-HP-enemy check instead.
     uint16_t battles_won;
 
+    // Cumulative battles the player ran from, for backends that resolve the escape and
+    // the battle's end inside one step (redcore). Stays 0 on the emulator, which sets
+    // `escaped` while the battle is still on screen instead.
+    uint16_t battles_fled;
+    uint8_t escaped;         // wEscapedFromBattle during an active battle, else 0
+
     // Backends must leave everything below zeroed when it does not apply (no battle,
     // empty party slots, empty bag slots): the emulator's RAM keeps stale values there.
     int8_t in_battle;        // 1 = wild, 2 = trainer, otherwise no active battle
@@ -102,6 +108,7 @@ typedef struct PkBackend {
 
 const PkBackend *pk_backend_emulator(void);
 const PkBackend *pk_backend_redcore(void);
+const PkBackend *pk_backend_native(void);
 
 int pk_event_count(void);
 const char *pk_event_name(int idx);
