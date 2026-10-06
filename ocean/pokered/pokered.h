@@ -212,7 +212,7 @@ static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
     bc->route22_rival_2nd_beaten = kw_bool(kw, "route22_rival_2nd_beaten");
 }
 
-static const PkBackend *select_backend(Dict *kw, const PkOptions *opts) {
+static const PkBackend *select_backend(Dict *kw) {
     const char *name = kw_str(kw, "backend", "emulator");
     const PkBackend *be = pk_backend_find(name);
     if (!be) {
@@ -223,16 +223,6 @@ static const PkBackend *select_backend(Dict *kw, const PkOptions *opts) {
         exit(1);
     }
 
-    unsigned missing = pk_all_action_buttons() & ~be->buttons;
-    if (missing) {
-        fprintf(stderr, "pokered: backend '%s' cannot press buttons 0x%02x that the action set uses\n", be->name,
-                missing);
-        exit(1);
-    }
-    if (pk_opt_bool(opts, "milestones_enabled", false) &&
-        !(be->caps & PK_CAP_STATE_SNAPSHOT))
-        fprintf(stderr, "pokered: backend '%s' has no milestone save states; env.milestones_enabled is ignored\n",
-                be->name);
     return be;
 }
 
@@ -248,7 +238,7 @@ void puf_init(Env *env, Dict *kwargs) {
     PkBackendConfig bc;
     read_backend_config(env, kwargs, &bc);
     PkOptions opts = {kwargs, dict_lookup};
-    env->be = select_backend(kwargs, &opts);
+    env->be = select_backend(kwargs);
     env->impl = env->be->create(&bc, &opts);
     if (pkms_active(env))
         pkms_init(env->be->state_size(), env->milestone_states_per_slot);
@@ -310,13 +300,6 @@ static void handle_blackout(Env *env) {
     env->totals.death += env->weight_death;
     env->blackout_count++;
     clear_visited(env);
-
-    if (env->be->caps & PK_CAP_BLACKOUT) {
-        env->be->blackout(env->impl);
-        env->be->snapshot(env->impl, &env->cur);
-        env->prev = env->cur;
-        update_observations(env);
-    }
 }
 
 static void puf_step_body(Env *env) {

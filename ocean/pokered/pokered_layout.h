@@ -67,11 +67,4 @@ static inline unsigned pk_action_buttons(int action) {
     }
 }
 
-static inline unsigned pk_all_action_buttons(void) {
-    unsigned mask = 0;
-    for (int a = 0; a < PKRED_ACTION_COUNT; a++)
-        mask |= pk_action_buttons(a);
-    return mask;
-}
-
 #endif

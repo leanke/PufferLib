@@ -277,10 +277,8 @@ bool emu_export_state(void *impl, PkState *out) {
 
 const PkBackend EMULATOR_BACKEND = {
     "emulator",
-    PK_CAP_FRAME_RGBA | PK_CAP_QUICKSAVE | PK_CAP_EXPORT_STATE | PK_CAP_STATE_SNAPSHOT,
-    0xFF,
     emu_create, emu_destroy, emu_acquire, emu_release, emu_reset, emu_warmup, emu_step, emu_snapshot, emu_screen,
-      NULL, emu_frame_rgba,
+    emu_frame_rgba,
     emu_quicksave, emu_export_state,
     emu_state_size, emu_state_save, emu_state_load,
 };

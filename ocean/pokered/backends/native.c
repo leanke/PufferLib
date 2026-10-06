@@ -287,11 +287,9 @@ static bool nat_state_load(void *impl, const void *buf) {
 
 static const PkBackend NATIVE_BACKEND = {
     "native",
-    PK_CAP_FRAME_RGBA | PK_CAP_EXPORT_STATE | PK_CAP_STATE_SNAPSHOT,
-    0xFF,
     nat_create, nat_destroy, nat_acquire, nat_release, nat_reset, nat_warmup, nat_step, nat_snapshot, nat_screen,
-      NULL, nat_frame_rgba,
-      NULL, nat_export_state,
+    nat_frame_rgba,
+    NULL, nat_export_state,
     nat_state_size, nat_state_save, nat_state_load,
 };
 

@@ -48,14 +48,6 @@ typedef enum {
     PK_EV_BATTLE_FLED = 1u << 2,
 } PkStepEvent;
 
-typedef enum {
-    PK_CAP_FRAME_RGBA = 1u << 1,
-    PK_CAP_QUICKSAVE = 1u << 2,
-    PK_CAP_BLACKOUT = 1u << 3,
-    PK_CAP_EXPORT_STATE = 1u << 4,
-    PK_CAP_STATE_SNAPSHOT = 1u << 5,
-} PkCapability;
-
 typedef struct {
     unsigned env_id;
     bool verbose, headless, screen_obs_enabled;
@@ -106,8 +98,6 @@ struct PkState;
 
 typedef struct PkBackend {
     const char *name;
-    uint32_t caps;
-    uint32_t buttons;
 
     void *(*create)(const PkBackendConfig *cfg, const PkOptions *opts);
     void (*destroy)(void *impl);
@@ -125,7 +115,6 @@ typedef struct PkBackend {
 
     void (*screen)(void *impl, float *out);
 
-    void (*blackout)(void *impl);
     bool (*frame_rgba)(void *impl, uint8_t *rgba);
     bool (*quicksave)(void *impl, const char *path);
     bool (*export_state)(void *impl, struct PkState *out);

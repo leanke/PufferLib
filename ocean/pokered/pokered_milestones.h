@@ -90,7 +90,7 @@ static bool pkms_sample(uint8_t *out, unsigned *rng) {
 }
 
 static bool pkms_active(const Env *env) {
-    return env->milestones_enabled && (env->be->caps & PK_CAP_STATE_SNAPSHOT);
+    return env->milestones_enabled;
 }
 
 static bool pkms_bag_has(const PkSnapshot *s, uint8_t item) {

@@ -35,12 +35,12 @@ void puf_render(Env* env) {
         const char* save_path = "ocean/pokered/states/quicksave.state";
         const char* pk_path = "ocean/pokered/states/quicksave.pkstate";
         bool saved = false;
-        if ((env->be->caps & PK_CAP_QUICKSAVE) && env->be->quicksave(env->impl, save_path)) {
+        if (env->be->quicksave(env->impl, save_path)) {
             printf("pokered: state saved to %s\n", save_path);
             saved = true;
         }
         PkState pk;
-        if ((env->be->caps & PK_CAP_EXPORT_STATE) && env->be->export_state(env->impl, &pk) &&
+        if (env->be->export_state(env->impl, &pk) &&
             pk_state_write(pk_path, &pk)) {
             printf("pokered: state saved to %s\n", pk_path);
             saved = true;
@@ -98,7 +98,7 @@ void puf_render(Env* env) {
             }
         }
         UpdateTexture(env->render_texture, env->render_pixels);
-    } else if ((env->be->caps & PK_CAP_FRAME_RGBA) && env->be->frame_rgba(env->impl, env->render_pixels)) {
+    } else if (env->be->frame_rgba(env->impl, env->render_pixels)) {
         UpdateTexture(env->render_texture, env->render_pixels);
     }
 
