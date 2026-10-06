@@ -69,6 +69,10 @@ struct Env {
 
     int blackout_count;
     bool reset_from_milestone;
+    bool milestones_enabled;
+    float milestone_reset_prob;
+    int milestone_states_per_slot;
+    uint8_t *ms_buf;
     int32_t max_episode_length;
     bool full_reset;
 
@@ -98,6 +102,7 @@ static inline bool is_directional_action(int action) {
     return action >= PKRED_ACTION_RIGHT && action <= PKRED_ACTION_DOWN;
 }
 
+#include "pokered_milestones.h"
 #include "pokered_observations.h"
 #include "pokered_rewards.h"
 
@@ -129,8 +134,7 @@ static void add_log(Env *env) {
         fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
     log->pokedex_owned += s->pokedex_owned_count;
     log->pokedex_seen += s->pokedex_seen_count;
-    log->milestone_pool_size +=
-        (env->be->caps & PK_CAP_MILESTONES) ? (float)env->be->milestone_pool_size() : 0.0f;
+    log->milestone_pool_size += pkms_active(env) ? (float)pkms_slots_filled() : 0.0f;
     log->reset_from_milestone += env->reset_from_milestone ? 1.0f : 0.0f;
     log->n++;
 }
@@ -175,6 +179,9 @@ static void read_episode_config(Env *env, Dict *kw) {
     env->max_episode_length = (int32_t)dict_get(kw, "max_episode_length");
     env->full_reset = kw_bool(kw, "full_reset");
     env->verbose = kw_bool(kw, "verbose");
+    env->milestones_enabled = kw_bool(kw, "milestones_enabled");
+    env->milestone_reset_prob = kw_float(kw, "milestone_reset_prob");
+    env->milestone_states_per_slot = kw_int(kw, "milestone_states_per_slot");
 }
 
 static bool dict_lookup(void *ctx, const char *key, double *num, const char **str) {
@@ -222,7 +229,8 @@ static const PkBackend *select_backend(Dict *kw, const PkOptions *opts) {
                 missing);
         exit(1);
     }
-    if (pk_opt_bool(opts, "milestones_enabled", false) && !(be->caps & PK_CAP_MILESTONES))
+    if (pk_opt_bool(opts, "milestones_enabled", false) &&
+        !(be->caps & PK_CAP_STATE_SNAPSHOT))
         fprintf(stderr, "pokered: backend '%s' has no milestone save states; env.milestones_enabled is ignored\n",
                 be->name);
     return be;
@@ -242,6 +250,8 @@ void puf_init(Env *env, Dict *kwargs) {
     PkOptions opts = {kwargs, dict_lookup};
     env->be = select_backend(kwargs, &opts);
     env->impl = env->be->create(&bc, &opts);
+    if (pkms_active(env))
+        pkms_init(env->be->state_size(), env->milestone_states_per_slot);
 
     env->visited_coords = (uint8_t *)calloc(VISITED_BYTES, 1);
     env->visited_cells = (uint8_t *)calloc(VISITED_BYTES, 1);
@@ -260,7 +270,9 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
         env->reset_from_milestone = false;
         clear_visited(env);
     }
-    env->be->reset(env->impl, full, &env->rng, &env->reset_from_milestone);
+    env->be->reset(env->impl, full, &env->rng);
+    if (full)
+        pkms_try_reset(env);
     if (full)
         env->blackout_count = 0;
 
@@ -355,6 +367,7 @@ void puf_close(Env *env) {
     free(env->visited_cells);
     free(env->map_visited_counts);
     free(env->prev_events);
+    free(env->ms_buf);
 }
 
 void puf_log(Log *log, Dict *out) {

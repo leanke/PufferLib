@@ -6,37 +6,9 @@
 #include "../includes/ram_map.h"
 #include "../pkstate.h"
 #include "../pokered_backend.h"
+#include "rc_host.h"
 
-typedef struct RcStartMon {
-    uint8_t species, level, status, catch_rate;
-    uint16_t hp, max_hp, attack, defense, speed, special, ot_id;
-    uint32_t exp;
-    uint16_t stat_exp[5];
-    uint8_t dv_hi, dv_lo;
-    uint8_t moves[4], pp[4];
-} RcStartMon;
-
-#define RC_START_MAX_PARTY 6
-#define RC_START_MAX_BAG 20
-#define RC_START_DEX_BYTES 19
-#define RC_START_TOGGLE_BYTES 32
-
-typedef struct RcStart {
-    uint8_t map, x, y;
-    uint8_t facing_byte;
-    uint8_t badges;
-    uint32_t money;
-    char player_name[16], rival_name[16];
-    int party_count;
-    RcStartMon party[RC_START_MAX_PARTY];
-    int bag_count;
-    uint8_t bag[RC_START_MAX_BAG][2];
-    uint8_t dex_owned[RC_START_DEX_BYTES];
-    uint8_t dex_seen[RC_START_DEX_BYTES];
-    uint8_t toggles[RC_START_TOGGLE_BYTES];
-    int event_count;
-    const char *events[PK_MAX_EVENTS];
-} RcStart;
+static_assert(PK_MAX_EVENTS <= RC_START_MAX_EVENTS, "RcStart.events too small for the pokered event list");
 
 #define RC_ADDR_PLAYER_NAME 0xD158u
 #define RC_ADDR_RIVAL_NAME 0xD34Au

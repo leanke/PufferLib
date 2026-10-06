@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes backends/redcore_battle_gfx.h: the real game font / battle-HUD tiles and the species,
+"""Writes vendor/redcore/src/host/rc_battle_gfx.c: the real game font / battle-HUD tiles and the species,
 move and type name tables, so redcore can draw the battle screen the way the emulator does.
 
 Tile art comes from the disassembly's gfx/font/font.png (codes 0x80-0xFF) and
@@ -10,7 +10,7 @@ emulator's four grays (0/85/170/255). Pure stdlib; no PIL needed."""
 import re, struct, sys, zlib
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else "vendor/pokered"
-OUT = sys.argv[2] if len(sys.argv) > 2 else "ocean/pokered/backends/redcore_battle_gfx.h"
+OUT = sys.argv[2] if len(sys.argv) > 2 else "vendor/redcore/src/host/rc_battle_gfx.c"
 
 
 def read_png(path):
@@ -74,7 +74,7 @@ def tiles(path):
 
 
 def grid(name, ts):
-    s = [f"static const uint8_t {name}[{len(ts)}][64] = {{"]
+    s = [f"const uint8_t {name}[{len(ts)}][64] = {{"]
     for t in ts:
         s.append("    {" + ",".join(str(v) for v in t) + "},")
     s.append("};")
@@ -96,23 +96,22 @@ moves = names(f"{ROOT}/data/moves/names.asm", r'li "([^"]*)"', fix)
 types = ["NORMAL", "FIGHTING", "FLYING", "POISON", "GROUND", "ROCK", "BIRD", "BUG", "GHOST"] + ["NORMAL"] * 11 + \
         ["FIRE", "WATER", "GRASS", "ELECTRIC", "PSYCHIC", "ICE", "DRAGON"]
 
-L = ["#ifndef REDCORE_OCEAN_BATTLE_GFX_H", "#define REDCORE_OCEAN_BATTLE_GFX_H", "",
-     "#include <stdint.h>", ""]
+L = ['#include "rc_battle_gfx.h"', ""]
 L += grid("RC_FONT_TILES", tiles(f"{ROOT}/gfx/font/font.png"))
 L += grid("RC_BATTLE_HUD_TILES", sum((tiles(f"{ROOT}/gfx/battle/battle_hud_{i}.png") for i in (1, 2, 3)), []))
 L += grid("RC_FONT_EXTRA_TILES", tiles(f"{ROOT}/gfx/font/font_extra.png"))
 L += grid("RC_BATTLE_EXTRA_TILES", tiles(f"{ROOT}/gfx/font/font_battle_extra.png"))
 L.append("")
 _, _, red = read_png(f"{ROOT}/gfx/player/redb.png")
-L.append("static const uint8_t RC_PLAYER_BACK_PIC[32 * 32] = {" + ",".join(str(shade(v)) for row in red for v in row) + "};")
+L.append("const uint8_t RC_PLAYER_BACK_PIC[32 * 32] = {" + ",".join(str(shade(v)) for row in red for v in row) + "};")
 L.append("")
 for var, lst in (("RC_SPECIES_NAMES", mons), ("RC_MOVE_NAMES", moves), ("RC_TYPE_NAMES", types),
                  ("RC_TRAINER_NAMES", trainers)):
-    L.append(f"#define {var}_COUNT {len(lst)}")
-    L.append(f"static const char *const {var}[] = {{")
+    if f"#define {var}_COUNT {len(lst)}\n" not in open("vendor/redcore/src/host/rc_battle_gfx.h").read():
+        print(f"WARNING: update {var}_COUNT in vendor/redcore/src/host/rc_battle_gfx.h to {len(lst)}")
+    L.append(f"const char *const {var}[] = {{")
     L += ['    "' + "".join(f"\\{ord(c):03o}" if ord(c) < 8 else c for c in n) + '",' for n in lst]
     L.append("};")
     L.append("")
-L.append("#endif")
 open(OUT, "w").write("\n".join(L) + "\n")
 print(f"wrote {OUT}: {len(mons)} species, {len(moves)} moves")

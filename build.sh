@@ -287,7 +287,7 @@ elif [ "$ENV" = "pokered" ]; then
         REDCORE_OBJ="$REDCORE_BUILD/pokered_redcore_backend.o"
         ${CXX:-g++} -std=c++17 -O2 -fopenmp -DPLATFORM_DESKTOP \
             -I./$RAYLIB_NAME/include -I./src -I./vendor -I./ocean/pokered \
-            -I./$REDCORE_DIR/src/core -I./$REDCORE_DIR/src/gen \
+            -I./$REDCORE_DIR/src/core -I./$REDCORE_DIR/src/gen -I./$REDCORE_DIR/src/host \
             -c ocean/pokered/backends/redcore.cpp -o "$REDCORE_OBJ"
         LINK_ARCHIVES+=("$REDCORE_OBJ" "$REDCORE_BUILD/libredcore_core.a")
     fi

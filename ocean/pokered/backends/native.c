@@ -137,10 +137,9 @@ static void nat_acquire(void *impl) { pokered_make_current(((NativeBackend *)imp
 static void nat_release(void *impl) { (void)impl; }
 static void nat_warmup(void *impl) { (void)impl; }
 
-static void nat_reset(void *impl, bool full_reset, unsigned *rng, bool *from_milestone) {
+static void nat_reset(void *impl, bool full_reset, unsigned *rng) {
     NativeBackend *be = (NativeBackend *)impl;
     (void)rng;
-    *from_milestone = false;
     pk_events_rebase(&be->events);
     if (!full_reset)
         return;
@@ -270,13 +269,30 @@ static bool nat_export_state(void *impl, PkState *out) {
     return true;
 }
 
+static size_t nat_state_size(void) { return pokered_state_size(); }
+
+static bool nat_state_save(void *impl, void *buf) {
+    NativeBackend *be = (NativeBackend *)impl;
+    size_t size = pokered_state_size();
+    return pokered_state_save(be->handle, be->ctx, buf, size) == size;
+}
+
+static bool nat_state_load(void *impl, const void *buf) {
+    NativeBackend *be = (NativeBackend *)impl;
+    if (!pokered_state_load(be->handle, be->ctx, buf, pokered_state_size()))
+        return false;
+    pk_events_rebase(&be->events);
+    return true;
+}
+
 static const PkBackend NATIVE_BACKEND = {
     "native",
-    PK_CAP_FRAME_RGBA | PK_CAP_EXPORT_STATE,
+    PK_CAP_FRAME_RGBA | PK_CAP_EXPORT_STATE | PK_CAP_STATE_SNAPSHOT,
     0xFF,
     nat_create, nat_destroy, nat_acquire, nat_release, nat_reset, nat_warmup, nat_step, nat_snapshot, nat_screen,
-      NULL,   NULL,   NULL,   NULL, nat_frame_rgba,
+      NULL, nat_frame_rgba,
       NULL, nat_export_state,
+    nat_state_size, nat_state_save, nat_state_load,
 };
 
 PK_REGISTER_BACKEND(NATIVE_BACKEND)

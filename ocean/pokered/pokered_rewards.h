@@ -90,8 +90,6 @@ static float signal_events(Env *env) {
       fresh++;
       if (env->verbose)
         printf("Event completed: %s\n", EVENT_LIST[i].name);
-      if ((env->be->caps & PK_CAP_MILESTONES) && !strstr(EVENT_LIST[i].name, "Trainer"))
-        env->be->milestone_event(env->impl, i);
     }
     env->prev_events[i] = done;
   }
@@ -107,8 +105,8 @@ static int completed_event_count(const PkSnapshot *s) {
 
 static float calculate_rewards(Env *env) {
   env->be->snapshot(env->impl, &env->cur);
-  if (env->be->caps & PK_CAP_MILESTONES)
-    env->be->milestone_map(env->impl, env->cur.map_n, env->prev.map_n);
+  if (pkms_active(env))
+    pkms_check(env);
 
   float w_explore = env->weight_exploration;
   if (env->exploration_death_scaling_enabled)

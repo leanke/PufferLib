@@ -54,11 +54,11 @@ typedef enum {
 } PkStepEvent;
 
 typedef enum {
-    PK_CAP_MILESTONES = 1u << 0,
     PK_CAP_FRAME_RGBA = 1u << 1,
     PK_CAP_QUICKSAVE = 1u << 2,
     PK_CAP_BLACKOUT = 1u << 3,
     PK_CAP_EXPORT_STATE = 1u << 4,
+    PK_CAP_STATE_SNAPSHOT = 1u << 5,
 } PkCapability;
 
 typedef struct {
@@ -120,7 +120,7 @@ typedef struct PkBackend {
     void (*acquire)(void *impl);
     void (*release)(void *impl);
 
-    void (*reset)(void *impl, bool full_reset, unsigned *rng, bool *from_milestone);
+    void (*reset)(void *impl, bool full_reset, unsigned *rng);
 
     void (*warmup)(void *impl);
 
@@ -131,12 +131,12 @@ typedef struct PkBackend {
     void (*screen)(void *impl, float *out);
 
     void (*blackout)(void *impl);
-    void (*milestone_map)(void *impl, int map_n, int prev_map_n);
-    void (*milestone_event)(void *impl, int event_idx);
-    int (*milestone_pool_size)(void);
     bool (*frame_rgba)(void *impl, uint8_t *rgba);
     bool (*quicksave)(void *impl, const char *path);
     bool (*export_state)(void *impl, struct PkState *out);
+    size_t (*state_size)(void);
+    bool (*state_save)(void *impl, void *buf);
+    bool (*state_load)(void *impl, const void *buf);
 } PkBackend;
 
 void pk_backend_register(const PkBackend *be);
