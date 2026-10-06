@@ -9,12 +9,14 @@
 #include "../includes/milestones.h"
 #include "../pokered_layout.h"
 #include "../pokered_backend.h"
+#include "../pkstate.h"
+#include "ram_scenario.h"
+#include "step_events.h"
 
 static_assert(SCREEN_WIDTH == GB_SCREEN_WIDTH && BLOCKS_TALL == (GB_SCREEN_HEIGHT / BLOCK_PIXELS),
               "pokered_layout.h screen geometry out of sync with gambatte_wrapper.h");
 static_assert(PK_FRAME_W == GB_SCREEN_WIDTH && PK_FRAME_H == GB_SCREEN_HEIGHT, "frame size mismatch");
 
-#define VIRIDIAN_CITY_MAP 0x01
 #define POKEDEX_BYTES ((PKRED_POKEDEX_NUM_POKEMON + 7) / 8)
 
 namespace {
@@ -22,7 +24,10 @@ namespace {
 struct EmuBackend {
     Emulator emu;
     PkBackendConfig cfg;
+    float milestone_sample_prob;
+    bool milestones_enabled, event_milestones_enabled, town_milestones_enabled;
     bool *milestone_captured;
+    PkEventTracker events;
 };
 
 inline const uint8_t *bank(Emulator *emu) { return gb_rambank1_base(emu); }
@@ -59,18 +64,25 @@ int popcount_bytes(const uint8_t *b, uint16_t addr, int size) {
     return count;
 }
 
-void set_missable_object_hidden(Emulator *emu, uint8_t missable_index, bool hidden) {
-    uint16_t addr = PKRED_ADDR_MISSABLE_OBJECT_FLAGS + (missable_index >> 3);
-    uint8_t bit = missable_index & 7;
-    uint8_t byte = read_mem(emu, addr);
-    if (hidden) byte |= (1 << bit);
-    else byte &= ~(1 << bit);
-    write_mem(emu, addr, byte);
-}
+uint8_t ram_read(void *ctx, uint16_t addr) { return read_mem((Emulator *)ctx, addr); }
+void ram_write(void *ctx, uint16_t addr, uint8_t val) { write_mem((Emulator *)ctx, addr, val); }
 
-void *emu_create(const PkBackendConfig *cfg) {
+void *emu_create(const PkBackendConfig *cfg, const PkOptions *opts) {
+    size_t state_len = strlen(cfg->state_path), ext_len = strlen(PK_STATE_EXT);
+    if (state_len >= ext_len && strcmp(cfg->state_path + state_len - ext_len, PK_STATE_EXT) == 0) {
+        fprintf(stderr,
+                "pokered: the emulator backend resumes a Gambatte save state; state_path %s is a .pkstate "
+                "(RAM only, for redcore/native). Point state_path at the Gambatte state it was converted from.\n",
+                cfg->state_path);
+        exit(1);
+    }
     EmuBackend *be = (EmuBackend *)calloc(1, sizeof(EmuBackend));
     be->cfg = *cfg;
+    be->milestone_sample_prob = pk_opt_float(opts, "milestone_sample_prob", 0.0f);
+    be->milestones_enabled = pk_opt_bool(opts, "milestones_enabled", false);
+    be->event_milestones_enabled = pk_opt_bool(opts, "event_milestones_enabled", false);
+    be->town_milestones_enabled = pk_opt_bool(opts, "town_milestones_enabled", false);
+    int vec_threads = pk_opt_int(opts, "vec_num_threads", 1);
     Emulator *emu = &be->emu;
     emu->frame_skip = cfg->frameskip;
     emu->press_frames = cfg->press_frames;
@@ -79,9 +91,9 @@ void *emu_create(const PkBackendConfig *cfg) {
         strncpy(emu->state_path, cfg->state_path, sizeof(emu->state_path) - 1);
     strncpy(emu->rom_path, cfg->rom_path, sizeof(emu->rom_path) - 1);
 
-    gb_set_audio_enabled(cfg->audio_enabled);
-    gb_set_frame_render_skip_enabled(cfg->frame_render_skip_enabled);
-    gb_pool_init(cfg->vec_num_threads > 0 ? cfg->vec_num_threads : 1, cfg->rom_path);
+    gb_set_audio_enabled(pk_opt_bool(opts, "audio_enabled", false));
+    gb_set_frame_render_skip_enabled(pk_opt_bool(opts, "frame_render_skip_enabled", false));
+    gb_pool_init(vec_threads > 0 ? vec_threads : 1, cfg->rom_path);
     milestone_pool_set_state_size(g_gb_pool.state_size);
     emu->pool_state_buf = (uint8_t *)malloc(g_gb_pool.state_size);
     emu->pool_initial_state_buf = (uint8_t *)malloc(g_gb_pool.state_size);
@@ -116,11 +128,12 @@ void emu_release(void *impl) { gb_pool_release_for(&((EmuBackend *)impl)->emu); 
 void emu_reset(void *impl, bool full_reset, unsigned *rng, bool *from_milestone) {
     EmuBackend *be = (EmuBackend *)impl;
     Emulator *emu = &be->emu;
+    *from_milestone = false;
+    pk_events_rebase(&be->events);
     if (!full_reset)
         return;
-    *from_milestone = false;
-    if (be->cfg.milestone_sample_prob > 0.0f && milestone_pool_size() > 0 &&
-        (float)rand_r(rng) / (float)RAND_MAX < be->cfg.milestone_sample_prob) {
+    if (be->milestone_sample_prob > 0.0f && milestone_pool_size() > 0 &&
+        (float)rand_r(rng) / (float)RAND_MAX < be->milestone_sample_prob) {
         *from_milestone = milestone_pool_sample(emu->pool_state_buf, rng);
     }
     if (be->cfg.verbose)
@@ -139,58 +152,19 @@ void emu_step(void *impl, int action, const PkSnapshot *last) {
     Emulator *emu = &be->emu;
     const PkBackendConfig *cfg = &be->cfg;
 
-    if (cfg->disable_wild_until_badge) {
-        uint8_t flags = read_mem(emu, PKRED_ADDR_WD72E);
-        if (last->badges == 0)
-            write_mem(emu, PKRED_ADDR_WD72E, flags | (1 << PKRED_WD72E_DISABLE_BATTLES_BIT));
-        else
-            write_mem(emu, PKRED_ADDR_WD72E, flags & ~(1 << PKRED_WD72E_DISABLE_BATTLES_BIT));
-    }
+    PkRam ram = {emu, ram_read, ram_write};
+    pk_ram_apply_scenario(&ram, cfg, last);
 
-    {
-
-        uint8_t flags = read_mem(emu, PKRED_ADDR_ROUTE22_RIVAL_EVENTS);
-        bool trigger_1st_was_set = flags & (1 << PKRED_ROUTE22_RIVAL_TRIGGER_1ST_BIT);
-        bool trigger_2nd_was_set = flags & (1 << PKRED_ROUTE22_RIVAL_TRIGGER_2ND_BIT);
-        if (cfg->route22_rival_beaten) {
-            flags &= ~(1 << PKRED_ROUTE22_RIVAL_TRIGGER_1ST_BIT);
-            flags |= (1 << PKRED_ROUTE22_RIVAL_BEAT_1ST_BIT);
-            if (trigger_1st_was_set)
-                flags &= ~(1 << PKRED_ROUTE22_RIVAL_WANTS_BATTLE_BIT);
-        } else {
-            flags &= ~(1 << PKRED_ROUTE22_RIVAL_BEAT_1ST_BIT);
-        }
-        if (cfg->route22_rival_2nd_beaten) {
-            flags &= ~(1 << PKRED_ROUTE22_RIVAL_TRIGGER_2ND_BIT);
-            flags |= (1 << PKRED_ROUTE22_RIVAL_BEAT_2ND_BIT);
-            if (trigger_2nd_was_set)
-                flags &= ~(1 << PKRED_ROUTE22_RIVAL_WANTS_BATTLE_BIT);
-        } else {
-            flags &= ~(1 << PKRED_ROUTE22_RIVAL_BEAT_2ND_BIT);
-        }
-        write_mem(emu, PKRED_ADDR_ROUTE22_RIVAL_EVENTS, flags);
-        if (cfg->route22_rival_beaten)
-            set_missable_object_hidden(emu, PKRED_MISSABLE_HS_ROUTE_22_RIVAL_1, true);
-        if (cfg->route22_rival_2nd_beaten)
-            set_missable_object_hidden(emu, PKRED_MISSABLE_HS_ROUTE_22_RIVAL_2, true);
-    }
-
-    if (last->map_n == VIRIDIAN_CITY_MAP && read_mem(emu, PKRED_ADDR_VIRIDIAN_CITY_CUR_SCRIPT) == 1) {
-        write_mem(emu, PKRED_ADDR_VIRIDIAN_CITY_CUR_SCRIPT, 0);
-        write_mem(emu, PKRED_ADDR_BATTLE_TYPE, 0);
-    }
-
-    static const GBAction TO_GB[PKRED_ACTION_COUNT] = {
-        GB_ACTION_A, GB_ACTION_B, GB_ACTION_RIGHT, GB_ACTION_LEFT, GB_ACTION_UP, GB_ACTION_DOWN,
-    };
     int skip = emu->frame_skip > 0 ? emu->frame_skip : 24;
     int press = emu->press_frames > 0 ? emu->press_frames : 8;
-    uint32_t key = (action < 0 || action >= PKRED_ACTION_COUNT) ? 0 : action_to_key(TO_GB[action]);
+    uint32_t key = pk_action_buttons(action);
     STEP_ACTION_FRAMES(emu->gb, key, emu->video_buffer, press, skip);
+    pk_events_stepped(&be->events);
 }
 
 void emu_snapshot(void *impl, PkSnapshot *s) {
-    Emulator *emu = &((EmuBackend *)impl)->emu;
+    EmuBackend *be = (EmuBackend *)impl;
+    Emulator *emu = &be->emu;
     const uint8_t *b = bank(emu);
     memset(s, 0, sizeof(*s));
     if (!b)
@@ -239,6 +213,8 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
 
     for (size_t i = 0; i < EVENT_COUNT; ++i)
         s->events[i] = (b[EVENT_LIST[i].address - 0xD000] >> EVENT_LIST[i].bit) & 1;
+
+    pk_events_apply(&be->events, s);
 }
 
 void emu_screen(void *impl, float *obs) {
@@ -264,12 +240,12 @@ void emu_screen(void *impl, float *obs) {
 
 void emu_milestone_map(void *impl, int map_n, int prev_map_n) {
     EmuBackend *be = (EmuBackend *)impl;
-    if (!be->cfg.milestones_enabled || map_n == prev_map_n || g_milestone_pool.state_size == 0)
+    if (!be->milestones_enabled || map_n == prev_map_n || g_milestone_pool.state_size == 0)
         return;
     for (size_t i = 0; i < MAP_MILESTONE_COUNT; i++) {
         if (map_n != MAP_MILESTONES[i].map_id)
             continue;
-        if (MAP_MILESTONES[i].is_town && !be->cfg.town_milestones_enabled)
+        if (MAP_MILESTONES[i].is_town && !be->town_milestones_enabled)
             continue;
         int slot = MAP_MILESTONE_SLOT_BASE + (int)i;
         if (be->milestone_captured[slot])
@@ -286,7 +262,7 @@ void emu_milestone_map(void *impl, int map_n, int prev_map_n) {
 
 void emu_milestone_event(void *impl, int idx) {
     EmuBackend *be = (EmuBackend *)impl;
-    if (!(be->cfg.milestones_enabled && be->cfg.event_milestones_enabled) || g_milestone_pool.state_size == 0 ||
+    if (!(be->milestones_enabled && be->event_milestones_enabled) || g_milestone_pool.state_size == 0 ||
         be->milestone_captured[idx])
         return;
     uint8_t *snap = (uint8_t *)malloc(g_milestone_pool.state_size);
@@ -324,12 +300,27 @@ bool emu_quicksave(void *impl, const char *path) {
     return ok;
 }
 
+bool emu_export_state(void *impl, PkState *out) {
+    Emulator *emu = &((EmuBackend *)impl)->emu;
+    gb_pool_acquire_for(emu);
+    for (int i = 0; i < PK_STATE_WRAM_SIZE; i++)
+        out->work_ram[i] = read_mem(emu, PK_STATE_WRAM_BASE + i);
+    for (int i = 0; i < PK_STATE_HRAM_SIZE; i++)
+        out->high_ram[i] = read_mem(emu, PK_STATE_HRAM_BASE + i);
+    pk_state_pick_shades(emu->video_buffer, GB_VIDEO_PITCH, GB_SCREEN_WIDTH, GB_SCREEN_HEIGHT, out->shade_rgb);
+    gb_pool_release_for(emu);
+    return true;
+}
+
 const PkBackend EMULATOR_BACKEND = {
-    "emulator", emu_create, emu_destroy, emu_acquire, emu_release, emu_reset, emu_warmup, emu_step,
-    emu_snapshot, emu_screen, NULL, emu_milestone_map, emu_milestone_event, emu_milestone_pool_size,
-    emu_frame_rgba, emu_quicksave,
+    "emulator",
+    PK_CAP_MILESTONES | PK_CAP_FRAME_RGBA | PK_CAP_QUICKSAVE | PK_CAP_EXPORT_STATE,
+    0xFF,
+    emu_create, emu_destroy, emu_acquire, emu_release, emu_reset, emu_warmup, emu_step, emu_snapshot, emu_screen,
+      NULL, emu_milestone_map, emu_milestone_event, emu_milestone_pool_size, emu_frame_rgba,
+    emu_quicksave, emu_export_state,
 };
 
 }
 
-extern "C" const PkBackend *pk_backend_emulator(void) { return &EMULATOR_BACKEND; }
+PK_REGISTER_BACKEND(EMULATOR_BACKEND)

@@ -299,7 +299,6 @@ static void rc_glyph(uint8_t *f, int x, int y, char c, uint8_t color);
 static void rc_text(uint8_t *f, int x, int y, const char *s, uint8_t color);
 static void rc_dialogue_box(uint8_t *f, const char *text, bool more);
 
-// The original schematic battle screen (bars and boxes), kept for [env] real_battle_ui_enabled = False.
 static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
     const GameState *gs = &env->gstate;
     const BattleState *bs = &gs->battle;
@@ -334,12 +333,11 @@ static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
             if (i == env->cursor_party) rc_cursor(f, 4, y + 5);
         }
         if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM) {
-            // "Use item on which POKeMON?" -- the same list, with the question in the text box.
             rc_dialogue_box(f, "Use item on which POKeMON?", false);
         } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_PARTY && env->party_stage == 0) {
             rc_dialogue_box(f, "Choose a POKeMON.", false);
         }
-        if (env->party_stage == 1) {  // SWITCH / STATS / CANCEL box, as in the real party menu
+        if (env->party_stage == 1) {
             rc_box(f, 88, 78, RC_FRAME_W, RC_FRAME_H, 255, 0);
             static const char *const LABELS[3] = {"SWITCH", "STATS", "CANCEL"};
             for (int i = 0; i < 3; i++) {
@@ -348,7 +346,7 @@ static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
             }
         } else if (env->party_stage == 3) {
             rc_dialogue_box(f, env->party_msg == 1 ? "That POKeMON is already out!" : "There's no will to fight!", true);
-        } else if (env->party_stage == 2) {  // stats page
+        } else if (env->party_stage == 2) {
             memset(f, 255, RC_FRAME_PIXELS);
             PartyMon m = rc_party_mon(gs, env->cursor_party < gs->party_count ? env->cursor_party : 0);
             char line[40];
@@ -386,7 +384,6 @@ static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
             if (i == env->cursor_fight) rc_cursor(f, 38, y - 2);
         }
     } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM && env->item_stage != 1) {
-        // The bag: a 3-row list ending in CANCEL, item name over its "x quantity".
         rc_box(f, 32, 16, RC_FRAME_W, 104, 255, 0);
         int entries = gs->bag.num_slots + 1;
         for (int row = 0; row < 3; row++) {
@@ -415,13 +412,9 @@ static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
     }
 }
 
-// ---- Tile-based battle UI ---------------------------------------------------
-// The battle screen is composed like the real one: a 20x18 map of character codes drawn with the
-// game's own font / HUD tiles (backends/redcore_battle_gfx.h), over the two pics. Layouts below were
-// read from the emulator's wTileMap (0xC3A0) at the same menus.
 #define RC_TM_W 20
 #define RC_TM_H 18
-#define RC_TM_NONE 0x100  // cell not drawn (whatever is already in the frame shows through)
+#define RC_TM_NONE 0x100
 #define RC_TM_SPACE 0x7F
 typedef uint16_t RcTileMap[RC_TM_H][RC_TM_W];
 
@@ -448,12 +441,11 @@ static unsigned rc_char_code(char c) {
     }
 }
 
-// A letter followed by 's/'d/'l/'t/'v/'r/'m uses the font's one-tile contraction glyphs.
 static void rc_tm_text(RcTileMap tm, int x, int y, const char *s) {
     for (const char *p = s; *p; p++, x++) {
         const char *c = strchr("dlstvrm", p[1] ? p[1] : '!');
         if (*p == '\'' && p > s && p[1] && c && ((p[-1] >= 'A' && p[-1] <= 'Z') || (p[-1] >= 'a' && p[-1] <= 'z'))) {
-            static const uint8_t TILE[] = {0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xE4, 0xE5};  // 'd 'l 's 't 'v 'r 'm
+            static const uint8_t TILE[] = {0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xE4, 0xE5};
             rc_tm_put(tm, x, y, TILE[c - "dlstvrm"]);
             p++;
         } else {
@@ -462,8 +454,7 @@ static void rc_tm_text(RcTileMap tm, int x, int y, const char *s) {
     }
 }
 
-// A text-box frame: corners/edges in the border tiles, interior cleared to blank.
-static void rc_tm_box(RcTileMap tm, int x0, int y0, int x1, int y1) {  // inclusive cell bounds
+static void rc_tm_box(RcTileMap tm, int x0, int y0, int x1, int y1) {
     for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++) {
             bool l = x == x0, r = x == x1, t = y == y0, b = y == y1;
@@ -492,16 +483,13 @@ static void rc_draw_tilemap(uint8_t *f, RcTileMap tm) {
         }
 }
 
-static void rc_tm_number(RcTileMap tm, int x, int y, unsigned v, int width, bool pad) {  // right-aligned in `width`
+static void rc_tm_number(RcTileMap tm, int x, int y, unsigned v, int width, bool pad) {
     char buf[8];
     if (pad) snprintf(buf, sizeof(buf), "%*u", width, v);
     else snprintf(buf, sizeof(buf), "%u", v);
     rc_tm_text(tm, x, y, buf);
 }
 
-// Name, level (or status), and the HP bar of one battler. The enemy panel is the thin top-left one
-// (name at 1,0; bar closes with 0x6C), the player's the lower-right one (name at 10,7, HP numbers
-// beneath the bar). Mirrors DrawEnemyHUDAndHPBars / DrawPlayerHUDAndHPBars.
 static void rc_tm_hud(RcTileMap tm, const RcDispMon *m, bool player) {
     int nx = player ? 10 : 1, ny = player ? 7 : 0;
     char name[12];
@@ -513,13 +501,13 @@ static void rc_tm_hud(RcTileMap tm, const RcDispMon *m, bool player) {
     if (status[0]) {
         rc_tm_text(tm, lx + 1, ly, status);
     } else {
-        rc_tm_put(tm, lx, ly, 0x6E);  // :L
+        rc_tm_put(tm, lx, ly, 0x6E);
         rc_tm_number(tm, lx + 1, ly, m->level, 1, false);
     }
 
     int bx = player ? 10 : 2, by = player ? 9 : 2;
-    rc_tm_put(tm, bx, by, 0x71);      // HP:
-    rc_tm_put(tm, bx + 1, by, 0x62);  // bar start
+    rc_tm_put(tm, bx, by, 0x71);
+    rc_tm_put(tm, bx + 1, by, 0x62);
     int px = 0;
     if (m->max_hp > 0 && m->hp > 0) {
         px = (int)((uint32_t)m->hp * 48 / m->max_hp);
@@ -528,7 +516,7 @@ static void rc_tm_hud(RcTileMap tm, const RcDispMon *m, bool player) {
     for (int i = 0; i < 6; i++) {
         int seg = px - i * 8;
         seg = seg < 0 ? 0 : seg > 8 ? 8 : seg;
-        rc_tm_put(tm, bx + 2 + i, by, 0x63 + seg);  // 0x63 empty .. 0x6B full
+        rc_tm_put(tm, bx + 2 + i, by, 0x63 + seg);
     }
     rc_tm_put(tm, bx + 8, by, player ? 0x6D : 0x6C);
     if (player) {
@@ -547,8 +535,6 @@ static void rc_tm_hud(RcTileMap tm, const RcDispMon *m, bool player) {
     }
 }
 
-// Pic placement, matched pixel-for-pixel against the emulator: a front pic sits in a 7x7-tile frame
-// at (96,0), centered by tiles and bottom-aligned; the back pic is its 32x32 art doubled at (8,40).
 static void rc_draw_foe_pic(uint8_t *f, unsigned species) {
     const RedcoreAtlas *front = (species < NUM_POKEMON_PIC_ASSETS) ? &g_redcore_front_atlas[species] : NULL;
     if (front && front->gray) {
@@ -612,12 +598,11 @@ static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
             if (i == env->cursor_party) rc_cursor(f, 4, y + 5);
         }
         if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM) {
-            // "Use item on which POKeMON?" -- the same list, with the question in the text box.
             rc_dialogue_box(f, "Use item on which POKeMON?", false);
         } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_PARTY && env->party_stage == 0) {
             rc_dialogue_box(f, "Choose a POKeMON.", false);
         }
-        if (env->party_stage == 1) {  // SWITCH / STATS / CANCEL box, as in the real party menu
+        if (env->party_stage == 1) {
             rc_box(f, 88, 78, RC_FRAME_W, RC_FRAME_H, 255, 0);
             static const char *const LABELS[3] = {"SWITCH", "STATS", "CANCEL"};
             for (int i = 0; i < 3; i++) {
@@ -626,7 +611,7 @@ static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
             }
         } else if (env->party_stage == 3) {
             rc_dialogue_box(f, env->party_msg == 1 ? "That POKeMON is already out!" : "There's no will to fight!", true);
-        } else if (env->party_stage == 2) {  // stats page
+        } else if (env->party_stage == 2) {
             memset(f, 255, RC_FRAME_PIXELS);
             PartyMon m = rc_party_mon(gs, env->cursor_party < gs->party_count ? env->cursor_party : 0);
             char line[40];
@@ -652,20 +637,18 @@ static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
             if (c == env->cursor_main) rc_cursor(f, x - 8, y - 2);
         }
     } else if (env->battle_menu == RC_MENU_MAIN) {
-        // Empty message box on the left, FIGHT/PKMN/ITEM/RUN on the right.
         rc_tm_box(tm, 0, 12, 19, 17);
         rc_tm_put(tm, 8, 12, 0x79);
         for (int y = 13; y <= 16; y++) rc_tm_put(tm, 8, y, 0x7C);
         rc_tm_put(tm, 8, 17, 0x7D);
         rc_tm_text(tm, 10, 14, "FIGHT");
-        rc_tm_put(tm, 16, 14, 0xE1);  // <PK><MN>
+        rc_tm_put(tm, 16, 14, 0xE1);
         rc_tm_put(tm, 17, 14, 0xE2);
         rc_tm_text(tm, 10, 16, "ITEM");
         rc_tm_text(tm, 16, 16, "RUN");
         static const int CX[4] = {9, 15, 9, 15}, CY[4] = {14, 14, 16, 16};
         rc_tm_put(tm, CX[env->cursor_main & 3], CY[env->cursor_main & 3], 0xED);
     } else if (env->battle_menu == RC_MENU_FIGHT) {
-        // Move list with the TYPE/PP box of the highlighted move above it.
         rc_tm_box(tm, 4, 12, 19, 17);
         rc_tm_box(tm, 0, 8, 10, 12);
         for (int y = 13; y <= 16; y++) {
@@ -691,8 +674,6 @@ static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
             rc_tm_text(tm, 5, 11, pp);
         }
     } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM && env->item_stage != 1) {
-        // The bag: a 3-row list ending in CANCEL, item name over its "x quantity" (still schematic
-        // box art, drawn over the real pics and HUD).
         rc_draw_tilemap(f, tm);
         tm_drawn = true;
         rc_box(f, 0, 104, RC_FRAME_W, RC_FRAME_H, 255, 0);
@@ -725,8 +706,6 @@ static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
     if (!tm_drawn) rc_draw_tilemap(f, tm);
 }
 
-// One frame of the battle text phase (see redcore_battle_text.h): the scene the frame's flags ask
-// for, with the HP/level the frame says and its two message lines.
 static void redcore_draw_text_frame(const RcEnv *env, uint8_t *f) {
     const RcTextPhase *ph = &env->text;
     const RcTextFrame *tf = &ph->f[ph->i < ph->n ? ph->i : (ph->n ? ph->n - 1 : 0)];
@@ -759,7 +738,7 @@ static void redcore_draw_text_frame(const RcEnv *env, uint8_t *f) {
         rc_tm_box(tm, 0, 12, 19, 17);
         rc_tm_text(tm, 1, 14, tf->l1);
         rc_tm_text(tm, 1, 16, tf->l2);
-        if ((tf->flags & RCF_PROMPT) && (ph->ticks & 1) == 0) rc_tm_put(tm, 18, 16, 0xEE);  // blinking arrow
+        if ((tf->flags & RCF_PROMPT) && (ph->ticks & 1) == 0) rc_tm_put(tm, 18, 16, 0xEE);
     }
     if (tf->flags & RCF_YESNO) {
         rc_tm_box(tm, 14, 7, 19, 11);
@@ -771,7 +750,7 @@ static void redcore_draw_text_frame(const RcEnv *env, uint8_t *f) {
 }
 
 static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
-    if (env->cfg.real_battle_ui_enabled || env->cfg.battle_text_enabled) redcore_draw_battle_real(env, f);
+    if (env->opt.real_battle_ui_enabled || env->opt.battle_text_enabled) redcore_draw_battle_real(env, f);
     else redcore_draw_battle_schematic(env, f);
 }
 
@@ -784,10 +763,6 @@ static void redcore_draw_starter_select(const RcEnv *env, uint8_t *f) {
 }
 
 
-// ---- Text rendering ---------------------------------------------------------
-// Classic 5x7 ASCII font (0x20..0x7E), one byte per column, LSB = top row
-// (descenders use bit 7). Glyph advance is 6 px. Lets the synthesized frame show
-// real dialogue / naming-screen text instead of placeholder bars.
 #define RC_FONT_W 6
 static const uint8_t RC_FONT5X7[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00},
@@ -902,8 +877,6 @@ static void rc_text(uint8_t *f, int x, int y, const char *s, uint8_t color) {
     for (; *s; s++, x += RC_FONT_W) rc_glyph(f, x, y, *s, color);
 }
 
-// Word-wraps `s` (honoring '\n') to `cols` columns and draws the last `max_lines`
-// lines, so a long dialogue scrolls like the real text box.
 static void rc_text_wrapped(uint8_t *f, int x, int y, int line_h, int cols, int max_lines, const char *s) {
     char lines[16][40];
     int nlines = 0, len = 0;
@@ -933,7 +906,6 @@ static void rc_text_wrapped(uint8_t *f, int x, int y, int line_h, int cols, int 
     for (int i = first; i <= nlines; i++) rc_text(f, x, y + (i - first) * line_h, lines[i], 0);
 }
 
-// Bottom dialogue box shared by the overworld text box and the nickname prompt.
 static void rc_dialogue_box(uint8_t *f, const char *text, bool more) {
     rc_box(f, 0, 96, RC_FRAME_W, RC_FRAME_H, 255, 0);
     rc_text_wrapped(f, 8, 103, 12, 24, 3, text);
@@ -944,8 +916,6 @@ static void redcore_draw_textbox(const GameState *gs, uint8_t *f) {
     rc_dialogue_box(f, gs->text.buffer, gs->text.waiting_for_input);
 }
 
-// Naming flow (GAME_MODE_NAMING): the YES/NO nickname question over the
-// overworld, then the 9-column keyboard with the typed name above it.
 static void redcore_draw_naming(const GameState *gs, uint8_t *f) {
     const NamingState *n = &gs->naming;
     if (n->stage == NAMING_STAGE_ASK) {

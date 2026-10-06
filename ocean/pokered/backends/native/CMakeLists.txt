@@ -1,6 +1,3 @@
-# Builds vendor/pokered-native's `pokered` library as libnative_core.a without upstream's
-# top-level CMake (which needs its deps/ submodules). The source list comes from upstream's
-# own CMakeLists.txt files via tools/native_sources.py. See .claude/docs/vendor-pokered-native.md.
 cmake_minimum_required(VERSION 3.16)
 project(pokered_native_core C)
 
@@ -19,11 +16,6 @@ string(REPLACE "\n" ";" NATIVE_SOURCES "${NATIVE_SOURCES}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NATIVE_ROOT}/CMakeLists.txt
              ${NATIVE_ROOT}/src/CMakeLists.txt ${NATIVE_ROOT}/data/CMakeLists.txt)
 
-# Link-time optimization across the engine's files (many small per-frame checks inline into
-# game_frame), and -march=native for this machine's instruction set (-DNATIVE_MARCH=OFF for a
-# portable binary). The archive holds fat LTO objects (plain code beside the LTO bytecode) so a
-# non-LTO link of it still works; build.sh then merges the archive with the backend glue into one
-# object with `gcc -flto -r` for the final link.
 option(NATIVE_MARCH "Compile with -march=native" ON)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT NATIVE_IPO_OK OUTPUT NATIVE_IPO_ERROR LANGUAGES C)
@@ -40,7 +32,6 @@ if(NATIVE_MARCH)
 endif()
 target_include_directories(native_core PUBLIC ${NATIVE_ROOT}/include ${NATIVE_ROOT}/data)
 target_compile_options(native_core PRIVATE -O3 -w)
-# The thread's bound env is one load instead of a __tls_get_addr call (upstream does the same).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(native_core PRIVATE -ftls-model=initial-exec)
 endif()

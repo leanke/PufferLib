@@ -28,13 +28,11 @@ static uint8_t rc_grid_cursor(uint8_t cursor, int button) {
     }
 }
 
-// Bag entries shown in battle: the occupied slots followed by CANCEL. Three are visible at a time.
 #define RC_BAG_ROWS 3
 enum { RC_ITEM_MSG_NOT_TIME = 1, RC_ITEM_MSG_NO_EFFECT, RC_ITEM_MSG_BOX_FULL };
 
 static int rc_bag_entries(const GameState *gs) { return gs->bag.num_slots + 1; }
 
-// Items that ask "Use item on which POKeMON?" (what item_use_on_party_mon can do).
 static bool rc_item_is_medicine(uint8_t id) {
     switch (id) {
         case POTION: case SUPER_POTION: case HYPER_POTION: case MAX_POTION: case FULL_RESTORE:
@@ -46,7 +44,6 @@ static bool rc_item_is_medicine(uint8_t id) {
     }
 }
 
-// Moves the bag cursor one entry, scrolling the 3-row window only when it would leave it.
 static void rc_bag_move(RcEnv *env, int button) {
     int entries = rc_bag_entries(&env->gstate);
     if (button == PKRED_ACTION_UP && env->cursor_item > 0) {
@@ -67,7 +64,6 @@ static void rc_bag_clamp(RcEnv *env) {
 
 namespace { void rc_snapshot_now(RcEnv *env, PkSnapshot *s); }
 
-// ---- Battle text phase driver (frames are built in redcore_battle_text.h) ---------------------
 static void rc_text_start(RcEnv *env, const PkSnapshot *held) {
     RcTextPhase *ph = &env->text;
     if (ph->n == 0) return;
@@ -84,7 +80,6 @@ static void rc_text_finish(RcEnv *env) {
     env->text_return_menu = RC_MENU_MAIN;
 }
 
-// Frames that wait (the blinking arrow, YES/NO) take A or B; every other frame passes on its own.
 static void rc_text_input(RcEnv *env, int button) {
     RcTextPhase *ph = &env->text;
     const RcTextFrame *f = &ph->f[ph->i];
@@ -106,7 +101,7 @@ static void rc_text_input(RcEnv *env, int button) {
 
 static void rc_step_engine(RcEnv *env, Action a) {
     GameState *gs = &env->gstate;
-    bool narrate = env->cfg.battle_text_enabled &&
+    bool narrate = env->opt.battle_text_enabled &&
                    (gs->mode == GAME_MODE_BATTLE || gs->mode == GAME_MODE_BATTLE_SWITCH);
     if (!narrate) {
         gamestate_step(gs, a);
@@ -120,7 +115,6 @@ static void rc_step_engine(RcEnv *env, Action a) {
 
     bool turn_passed = memcmp(&pre.bs.rng, &gs->battle.rng, sizeof(pre.bs.rng)) != 0 ||
                        pre.mode != gs->mode || gs->battle.outcome != BATTLE_ONGOING;
-    // RUN against a trainer takes no turn but still gets its message.
     bool refused_run = a.run && pre.bs.is_trainer_battle;
     if (!turn_passed && !refused_run) return;
 
@@ -137,7 +131,6 @@ static void rc_step_engine(RcEnv *env, Action a) {
 static bool rc_party_input(RcEnv *env, int button, bool forced);
 static void rc_item_input(RcEnv *env, int button);
 
-// A one-box battle message over the scene (no engine step); `return_menu` is what shows afterwards.
 static void rc_battle_message(RcEnv *env, const char *l1, const char *l2, uint8_t return_menu) {
     GameState *gs = &env->gstate;
     RcTextPhase *ph = &env->text;
@@ -160,8 +153,6 @@ static bool rc_any_pp_left(const BattleMon *b) {
     return false;
 }
 
-// Every move is out of PP: the game says so and uses Struggle. The engine only plays move slots, so
-// Struggle is lent slot 0 for the turn and the real move and its (empty) PP are put back afterwards.
 static void rc_struggle_turn(RcEnv *env) {
     BattleMon *p = &env->gstate.battle.player;
     uint8_t move0 = p->moves[0], pp0 = p->pp[0];
@@ -191,7 +182,7 @@ static void rc_battle_button(RcEnv *env, int button) {
                 } else if (env->cursor_main == 0) {
                     env->battle_menu = RC_MENU_FIGHT;
                     int n = rc_move_count(gs);
-                    env->cursor_fight = env->last_move_slot < n ? env->last_move_slot : 0;  // starts on the last used move
+                    env->cursor_fight = env->last_move_slot < n ? env->last_move_slot : 0;
                 } else if (env->cursor_main == 1) {
                     env->battle_menu = RC_MENU_PARTY;
                     env->party_stage = 0;
@@ -199,7 +190,7 @@ static void rc_battle_button(RcEnv *env, int button) {
                 } else if (env->cursor_main == 2 && gs->bag.num_slots > 0) {
                     env->battle_menu = RC_MENU_ITEM;
                     env->item_stage = 0;
-                    rc_bag_clamp(env);  // the bag remembers its cursor and scroll
+                    rc_bag_clamp(env);
                 } else if (env->cursor_main == 3) {
                     a.run = 1;
                     rc_step_engine(env, a);
@@ -217,7 +208,7 @@ static void rc_battle_button(RcEnv *env, int button) {
             } else if (button == PKRED_ACTION_A) {
                 uint8_t slot = env->cursor_fight;
                 if (slot < n && gs->battle.player.moves[slot] != 0 && gs->battle.player.pp[slot] == 0) {
-                    rc_battle_message(env, "No PP left for", "this move!", RC_MENU_FIGHT);  // refused, no turn
+                    rc_battle_message(env, "No PP left for", "this move!", RC_MENU_FIGHT);
                 } else if (slot < n && gs->battle.player.moves[slot] != 0) {
                     env->player_selected_move = gs->battle.player.moves[slot];
                     env->last_move_slot = slot;
@@ -238,7 +229,7 @@ static void rc_battle_button(RcEnv *env, int button) {
         case RC_MENU_PARTY:
             if (rc_party_input(env, button, false)) {
                 env->battle_menu = RC_MENU_MAIN;
-                env->cursor_main = 0;  // SendOutMon resets the main menu and bag cursors
+                env->cursor_main = 0;
                 env->cursor_item = 0;
                 env->bag_scroll = 0;
             }
@@ -246,10 +237,6 @@ static void rc_battle_button(RcEnv *env, int button) {
     }
 }
 
-// The battle bag (DisplayBagMenu/UseBagItem), as measured on the emulator: a 3-row list ending in
-// CANCEL; A on a medicine asks which mon to use it on (B goes back to the list); an item with no
-// effect, or a key item, shows a message that A/B dismisses back to the list and costs nothing;
-// a Poke Ball thrown at a trainer's mon is wasted (and the turn passes).
 static void rc_item_input(RcEnv *env, int button) {
     GameState *gs = &env->gstate;
     int n = gs->bag.num_slots;
@@ -266,7 +253,7 @@ static void rc_item_input(RcEnv *env, int button) {
                     a.use_item = 1;
                     a.item_id = id;
                     rc_step_engine(env, a);
-                    if (bag_count(&gs->bag, id) == before) {  // refused: party and box are both full
+                    if (bag_count(&gs->bag, id) == before) {
                         env->item_stage = 2;
                         env->item_msg = RC_ITEM_MSG_BOX_FULL;
                     } else {
@@ -285,7 +272,7 @@ static void rc_item_input(RcEnv *env, int button) {
             }
             return;
         }
-        case 1: {  // "Use item on which POKeMON?"
+        case 1: {
             int count = gs->party_count;
             if (button == PKRED_ACTION_B) {
                 env->item_stage = 0;
@@ -311,22 +298,19 @@ static void rc_item_input(RcEnv *env, int button) {
                     a.item_party_slot_plus1 = (uint8_t)(slot + 1);
                     rc_step_engine(env, a);
                     env->item_stage = 0;
-                    env->battle_menu = RC_MENU_MAIN;  // the turn passed; the command cursor stays on ITEM
+                    env->battle_menu = RC_MENU_MAIN;
                 }
             } else if (rc_is_directional(button)) {
                 env->cursor_party = rc_list_cursor(env->cursor_party, count, button);
             }
             return;
         }
-        default:  // a message: A or B returns to the bag list
+        default:
             if (button == PKRED_ACTION_A || button == PKRED_ACTION_B) env->item_stage = 0;
             return;
     }
 }
 
-// The party list shared by the battle PKMN command and the forced switch after a faint
-// (DisplayPartyMenu): A on a mon opens the SWITCH/STATS/CANCEL box, SWITCH sends it out.
-// Returns true once a switch was actually performed.
 static bool rc_party_input(RcEnv *env, int button, bool forced) {
     GameState *gs = &env->gstate;
     int count = gs->party_count;
@@ -349,12 +333,11 @@ static bool rc_party_input(RcEnv *env, int button, bool forced) {
                 env->cursor_action = rc_list_cursor(env->cursor_action, 3, button);
             } else if (button == PKRED_ACTION_A) {
                 if (env->cursor_action == 1) {
-                    env->party_stage = 2;  // STATS
+                    env->party_stage = 2;
                     return false;
                 }
                 env->party_stage = 0;
-                if (env->cursor_action != 0) return false;  // CANCEL
-                // SWITCH: refused (with a message to dismiss) for the mon already out and for fainted mons.
+                if (env->cursor_action != 0) return false;
                 if (env->cursor_party >= count) return false;
                 if (env->cursor_party == gs->active_party_slot) {
                     env->party_stage = 3;
@@ -375,7 +358,7 @@ static bool rc_party_input(RcEnv *env, int button, bool forced) {
                 return true;
             }
             return false;
-        default:  // stats page (2) or a refusal message (3): A or B returns to the list
+        default:
             if (button == PKRED_ACTION_A || button == PKRED_ACTION_B) env->party_stage = 0;
             return false;
     }
@@ -464,14 +447,14 @@ static void redcore_menu_after_step(RcEnv *env) {
     if (gs->mode == GAME_MODE_BATTLE || gs->mode == GAME_MODE_SAFARI_BATTLE) {
         env->battle_menu = RC_MENU_MAIN;
         env->party_stage = 0;
-        env->cursor_main = 0;  // SendOutMon (battle start, and after a forced switch) resets the main and bag cursors
+        env->cursor_main = 0;
         env->cursor_item = 0;
         env->bag_scroll = 0;
         env->item_stage = 0;
-        if (env->prev_mode != GAME_MODE_BATTLE_SWITCH) {  // a new battle (InitBattleVariables)
+        if (env->prev_mode != GAME_MODE_BATTLE_SWITCH) {
             env->player_selected_move = 0;
             env->cursor_party_saved = 0;
-            if (env->cfg.battle_text_enabled && gs->mode == GAME_MODE_BATTLE) {
+            if (env->opt.battle_text_enabled && gs->mode == GAME_MODE_BATTLE) {
                 RcTextBuilder tb;
                 tb.ph = &env->text;
                 tb.ph->n = 0;

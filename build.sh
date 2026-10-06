@@ -255,7 +255,10 @@ elif [ "$ENV" = "pokered" ]; then
     LINK_ARCHIVES+=("$GAMBATTE_DIR/install/lib/libgambatte.a")
 
     # cJSON: minimal JSON dep backing pokered_stream.h.
-    EXTRA_SRC="ocean/pokered/gambatte/gambatte_c.cpp ocean/pokered/backends/emulator.cpp ocean/pokered/backends/event_names.cpp vendor/cJSON.c"
+    # registry.cpp: backends register themselves from a constructor (PK_REGISTER_BACKEND), so
+    # a backend that is not linked in below is simply not found at runtime. pkstate.cpp: the
+    # shared .pkstate loader/converter every backend's start state goes through.
+    EXTRA_SRC="ocean/pokered/gambatte/gambatte_c.cpp ocean/pokered/backends/emulator.cpp ocean/pokered/backends/event_names.cpp ocean/pokered/backends/registry.cpp ocean/pokered/backends/pkstate.cpp vendor/cJSON.c"
 
     # redcore backend: a from-scratch native C Pokemon Red reimplementation
     # (https://github.com/leanke/redcore) selected at runtime with
@@ -265,9 +268,7 @@ elif [ "$ENV" = "pokered" ]; then
     # translation unit, so the backend glue (backends/redcore.cpp) is compiled to
     # its own object with the engine include paths instead of going through
     # EXTRA_SRC/INCLUDES.
-    if [ "${POKERED_NO_REDCORE:-0}" = "1" ]; then
-        EXTRA_SRC="$EXTRA_SRC ocean/pokered/backends/redcore_stub.cpp"
-    else
+    if [ "${POKERED_NO_REDCORE:-0}" != "1" ]; then
         REDCORE_DIR="vendor/redcore"
         REDCORE_REMOTE="git@github.com:leanke/redcore.git"
         # Not pinned: a missing vendor/redcore is cloned at the tip of redcore's
@@ -299,9 +300,7 @@ elif [ "$ENV" = "pokered" ]; then
     # source list read from upstream's own CMake files. Like redcore, the glue
     # (backends/native.c) is its own object so the engine's headers and macros (g_wram,
     # hram, ...) stay out of the trainer's translation unit.
-    if [ "${POKERED_NO_NATIVE:-0}" = "1" ]; then
-        EXTRA_SRC="$EXTRA_SRC ocean/pokered/backends/native_stub.cpp"
-    else
+    if [ "${POKERED_NO_NATIVE:-0}" != "1" ]; then
         NATIVE_DIR="vendor/pokered-native"
         NATIVE_REMOTE="git@github.com:leanke/pokered-native.git"
         # Not pinned: a missing vendor/pokered-native is cloned at the tip of its default
@@ -317,11 +316,11 @@ elif [ "$ENV" = "pokered" ]; then
             -DCMAKE_BUILD_TYPE=Release >/dev/null
         cmake --build "$NATIVE_BUILD" --target native_core -j"$(nproc)"
         NATIVE_OBJ="$NATIVE_BUILD/pokered_native_backend.o"
-        # LTO + -march=native match backends/native/CMakeLists.txt (-DNATIVE_MARCH=OFF there and
-        # NATIVE_MARCH=0 here for a portable binary).
+        # -O3, LTO, -ftls-model=initial-exec and -march=native match backends/native/CMakeLists.txt
+        # (-DNATIVE_MARCH=OFF there and NATIVE_MARCH=0 here for a portable binary).
         NATIVE_CC_FLAGS=(-flto=auto)
         [ "${NATIVE_MARCH:-1}" = "1" ] && NATIVE_CC_FLAGS+=(-march=native)
-        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -ffat-lto-objects \
+        ${CC:-gcc} -std=gnu11 -O3 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -ffat-lto-objects \
             -I./src -I./vendor -I./ocean/pokered \
             -I./$NATIVE_DIR/include -I./$NATIVE_DIR/data \
             -c ocean/pokered/backends/native.c -o "$NATIVE_OBJ"
@@ -331,7 +330,7 @@ elif [ "$ENV" = "pokered" ]; then
         # the CUDA host objects alone, which would fail there (duplicate fatbinData symbols).
         # gcc warns that the final link's LTRANS runs serially; that is expected.
         NATIVE_LTO_OBJ="$NATIVE_BUILD/pokered_native_lto.o"
-        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -flto="$(nproc)" -r -nostdlib \
+        ${CC:-gcc} -std=gnu11 -O3 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -flto="$(nproc)" -r -nostdlib \
             "$NATIVE_OBJ" -Wl,--whole-archive "$NATIVE_BUILD/libnative_core.a" -Wl,--no-whole-archive \
             -o "$NATIVE_LTO_OBJ"
         LINK_ARCHIVES+=("$NATIVE_LTO_OBJ")

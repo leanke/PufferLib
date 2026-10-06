@@ -1,17 +1,6 @@
 #ifndef POKERED_H
 #define POKERED_H
 
-// Pokemon Red environment.
-//
-// One Env serves three game backends (Gambatte emulator / redcore / native) behind
-// pokered_backend.h. This file owns the episode lifecycle; the pieces it
-// delegates to:
-//   pokered_layout.h        observation layout + action enum (shared with pokered.cu)
-//   pokered_visited.h       bit-packed visited sets
-//   pokered_observations.h  PkSnapshot -> observation vector
-//   pokered_rewards.h       the reward signals
-//   pokered_render.h        raylib window / keyboard play
-
 #include <math.h>
 
 #include "raylib.h"
@@ -24,17 +13,13 @@ typedef float obs_t;
 
 #include "pokered_layout.h"
 #include "pokered_backend.h"
+#include "pkstate.h"
 #include "pokered_visited.h"
 
 #define ACT_SIZES {PKRED_ACTION_COUNT}
 #define OBS_SIZE TOTAL_OBSERVATIONS
 #define NUM_ATNS 1
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-// Weighted reward totals for the current episode (what each term contributed).
 typedef struct {
     float explore, catching, seeing, leveling, events, battling, death, fleeing;
 } RewardTotals;
@@ -61,39 +46,32 @@ struct Env {
     Log log;
     Agent agents[1];
     int num_agents;
-    int tag;                         // set by the vec layer
-    int boundary_reached;            // set by the vec layer
+    int tag;
+    int boundary_reached;
     unsigned int rng;
 
-    // Game backend and the last two snapshots of its state.
     const PkBackend *be;
     void *impl;
     PkSnapshot cur;
     PkSnapshot prev;
 
-    // Episode bookkeeping.
     int32_t step_count;
     float score;
     int prev_action;
     RewardTotals totals;
     PokeredStream stream;
 
-    // Exploration tracking.
-    uint8_t *visited_coords;         // every tile stepped on (also an observation)
-    uint8_t *visited_cells;          // coarse cells already paid out
-    uint16_t *map_visited_counts;    // new tiles per map (map_exhaustion log)
+    uint8_t *visited_coords;
+    uint8_t *visited_cells;
+    uint16_t *map_visited_counts;
     uint32_t unique_coords_count;
-    uint8_t *prev_events;            // events seen last step, for milestone capture
+    uint8_t *prev_events;
 
-    // Death / reset handling.
-    bool party_wiped;                // latch so one wipe-out is penalised once
-    bool escape_latched;             // emulator: "got away" seen during the current battle
     int blackout_count;
     bool reset_from_milestone;
     int32_t max_episode_length;
-    bool full_reset;                 // episode end reloads the start state
+    bool full_reset;
 
-    // Reward weights.
     float weight_exploration;
     float weight_catching;
     float weight_seeing;
@@ -101,13 +79,12 @@ struct Env {
     float weight_events;
     float weight_battling;
     float weight_death;
-    float weight_fleeing;            // penalty per battle run from (0 = off)
+    float weight_fleeing;
     int exploration_cell_size;
     bool exploration_death_scaling_enabled;
 
-    // Observation toggle (off = the screen segment is zero-filled).
     bool screen_obs_enabled;
-    float map_exhaustion_norm;       // log-only: visits at which map_exhaustion reads 1.0
+    float map_exhaustion_norm;
 
     bool verbose;
 
@@ -135,8 +112,6 @@ static void add_log(Env *env) {
     const PkSnapshot *s = &env->cur;
     Log *log = &env->log;
 
-    // The vecenv sums every Log field across envs and divides by n, so each episode adds
-    // to the log (an env can finish several between flushes) instead of overwriting it.
     log->episode_length += env->step_count;
     log->episode_return += env->score;
     const float *totals = (const float *)&env->totals;
@@ -154,14 +129,11 @@ static void add_log(Env *env) {
         fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
     log->pokedex_owned += s->pokedex_owned_count;
     log->pokedex_seen += s->pokedex_seen_count;
-    log->milestone_pool_size += env->be->milestone_pool_size ? (float)env->be->milestone_pool_size() : 0.0f;
+    log->milestone_pool_size +=
+        (env->be->caps & PK_CAP_MILESTONES) ? (float)env->be->milestone_pool_size() : 0.0f;
     log->reset_from_milestone += env->reset_from_milestone ? 1.0f : 0.0f;
     log->n++;
 }
-
-// ---------------------------------------------------------------------------
-// Init: read config
-// ---------------------------------------------------------------------------
 
 static bool kw_bool(Dict *kw, const char *key) { return dict_get(kw, key) != 0.0; }
 static int kw_int(Dict *kw, const char *key) { return (int)dict_get(kw, key); }
@@ -205,6 +177,15 @@ static void read_episode_config(Env *env, Dict *kw) {
     env->verbose = kw_bool(kw, "verbose");
 }
 
+static bool dict_lookup(void *ctx, const char *key, double *num, const char **str) {
+    DictItem *item = dict_find((Dict *)ctx, key);
+    if (!item)
+        return false;
+    if (num) *num = item->value;
+    if (str) *str = item->str;
+    return true;
+}
+
 static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
     memset(bc, 0, sizeof(*bc));
     bc->env_id = env->rng;
@@ -214,53 +195,36 @@ static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
     bc->frameskip = kw_int(kw, "frameskip");
     bc->press_frames = kw_int(kw, "press_frames");
     bc->headless = kw_bool(kw, "headless");
-    bc->audio_enabled = kw_bool(kw, "audio_enabled");
-    bc->frame_render_skip_enabled = kw_bool(kw, "frame_render_skip_enabled");
-    DictItem *nt = dict_find(kw, "vec_num_threads");
-    bc->vec_num_threads = nt ? (int)nt->value : 1;
 
     copy_str(bc->rom_path, sizeof(bc->rom_path), dict_get_str(kw, "rom_path"));
     copy_str(bc->state_path, sizeof(bc->state_path), kw_str(kw, "state_path", ""));
-    copy_str(bc->assets_dir, sizeof(bc->assets_dir), kw_str(kw, "assets_dir", "vendor/redcore/assets"));
-    DictItem *fs = dict_find(kw, "fixed_starter_species");
-    bc->fixed_starter_species = fs ? (int)fs->value : 0;
+    bc->pkstate_cache_enabled = kw_bool(kw, "pkstate_cache_enabled");
 
     bc->disable_wild_until_badge = kw_bool(kw, "disable_wild_until_badge");
     bc->route22_rival_beaten = kw_bool(kw, "route22_rival_beaten");
     bc->route22_rival_2nd_beaten = kw_bool(kw, "route22_rival_2nd_beaten");
-    bc->nickname_prompt_enabled = kw_bool(kw, "nickname_prompt_enabled");
-    bc->npc_text_enabled = kw_bool(kw, "npc_text_enabled");
-    bc->npc_movement_enabled = kw_bool(kw, "npc_movement_enabled");
-    bc->real_battle_ui_enabled = kw_bool(kw, "real_battle_ui_enabled");
-    bc->battle_text_enabled = kw_bool(kw, "battle_text_enabled");
-
-    bc->milestone_sample_prob = kw_float(kw, "milestone_sample_prob");
-    bc->milestones_enabled = kw_bool(kw, "milestones_enabled");
-    bc->event_milestones_enabled = kw_bool(kw, "event_milestones_enabled");
-    bc->town_milestones_enabled = kw_bool(kw, "town_milestones_enabled");
 }
 
-static const PkBackend *select_backend(Dict *kw) {
+static const PkBackend *select_backend(Dict *kw, const PkOptions *opts) {
     const char *name = kw_str(kw, "backend", "emulator");
-    const PkBackend *be = NULL;
-    if (strcmp(name, "emulator") == 0) {
-        be = pk_backend_emulator();
-    } else if (strcmp(name, "redcore") == 0) {
-        be = pk_backend_redcore();
-        if (!be) {
-            fprintf(stderr, "pokered: built with --no-redcore; env.backend=redcore is unavailable\n");
-            exit(1);
-        }
-    } else if (strcmp(name, "native") == 0) {
-        be = pk_backend_native();
-        if (!be) {
-            fprintf(stderr, "pokered: built with --no-native; env.backend=native is unavailable\n");
-            exit(1);
-        }
-    } else {
-        fprintf(stderr, "pokered: unknown env.backend '%s' (expected emulator, redcore or native)\n", name);
+    const PkBackend *be = pk_backend_find(name);
+    if (!be) {
+        fprintf(stderr, "pokered: env.backend '%s' is not available; this build has:", name);
+        for (int i = 0; i < pk_backend_count(); i++)
+            fprintf(stderr, " %s", pk_backend_at(i)->name);
+        fprintf(stderr, "\n(a backend skipped with build.sh --no-<name> is not linked in)\n");
         exit(1);
     }
+
+    unsigned missing = pk_all_action_buttons() & ~be->buttons;
+    if (missing) {
+        fprintf(stderr, "pokered: backend '%s' cannot press buttons 0x%02x that the action set uses\n", be->name,
+                missing);
+        exit(1);
+    }
+    if (pk_opt_bool(opts, "milestones_enabled", false) && !(be->caps & PK_CAP_MILESTONES))
+        fprintf(stderr, "pokered: backend '%s' has no milestone save states; env.milestones_enabled is ignored\n",
+                be->name);
     return be;
 }
 
@@ -275,8 +239,9 @@ void puf_init(Env *env, Dict *kwargs) {
 
     PkBackendConfig bc;
     read_backend_config(env, kwargs, &bc);
-    env->be = select_backend(kwargs);
-    env->impl = env->be->create(&bc);
+    PkOptions opts = {kwargs, dict_lookup};
+    env->be = select_backend(kwargs, &opts);
+    env->impl = env->be->create(&bc, &opts);
 
     env->visited_coords = (uint8_t *)calloc(VISITED_BYTES, 1);
     env->visited_cells = (uint8_t *)calloc(VISITED_BYTES, 1);
@@ -288,10 +253,6 @@ void puf_init(Env *env, Dict *kwargs) {
                 kw_str(kwargs, "stream_user", "User"), kw_str(kwargs, "stream_color", "#0000FF"),
                 env->rng, kw_int(kwargs, "stream_interval"));
 }
-
-// ---------------------------------------------------------------------------
-// Reset
-// ---------------------------------------------------------------------------
 
 static void puf_reset_body(Env *env, bool do_full_reset) {
     bool full = env->full_reset && do_full_reset;
@@ -313,8 +274,6 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->step_count = 0;
     env->score = 0.0f;
     env->prev_action = -1;
-    env->party_wiped = false;
-    env->escape_latched = false;
     memset(&env->totals, 0, sizeof(env->totals));
     memcpy(env->prev_events, env->cur.events, EVENT_COUNT);
 
@@ -327,38 +286,12 @@ void puf_reset(Env *env) {
     env->be->release(env->impl);
 }
 
-// ---------------------------------------------------------------------------
-// Step
-// ---------------------------------------------------------------------------
-
-// Episodes end only on the step limit. The new episode's first observation is
-// already in place when terminals[0] is set.
 static void end_episode(Env *env) {
     add_log(env);
     puf_reset_body(env, true);
     env->agents[0].terminals[0] = 1;
 }
 
-// True on the step the whole party goes down (once per wipe-out). Backends that
-// resolve the blackout inside the step report it through the snapshot's blackout
-// counter; otherwise the wipe shows up as a 0-HP party for at least one step.
-static bool party_just_wiped(Env *env, uint16_t blackouts_before) {
-    if (env->cur.blackouts != blackouts_before) {
-        env->party_wiped = false;
-        return true;
-    }
-    bool alive = env->cur.party_count == 0 || env->cur.hp_fraction > 0.0f;
-    if (alive) {
-        env->party_wiped = false;
-        return false;
-    }
-    bool first = !env->party_wiped;
-    env->party_wiped = true;
-    return first;
-}
-
-// Death penalty, then let the backend heal/teleport the player like a real
-// blackout. Does not end the episode.
 static void handle_blackout(Env *env) {
     env->agents[0].rewards[0] -= env->weight_death;
     env->score -= env->weight_death;
@@ -366,9 +299,8 @@ static void handle_blackout(Env *env) {
     env->blackout_count++;
     clear_visited(env);
 
-    if (env->be->blackout) {
+    if (env->be->caps & PK_CAP_BLACKOUT) {
         env->be->blackout(env->impl);
-        env->party_wiped = false;
         env->be->snapshot(env->impl, &env->cur);
         env->prev = env->cur;
         update_observations(env);
@@ -381,7 +313,6 @@ static void puf_step_body(Env *env) {
     env->step_count++;
 
     env->prev_action = (int)env->agents[0].actions[0];
-    uint16_t blackouts_before = env->cur.blackouts;
     env->be->step(env->impl, env->prev_action, &env->cur);
 
     float reward = calculate_rewards(env);
@@ -393,7 +324,7 @@ static void puf_step_body(Env *env) {
     if (env->stream.interval > 0 && env->step_count % env->stream.interval == 0)
         stream_flush(&env->stream);
 
-    if (party_just_wiped(env, blackouts_before))
+    if (env->cur.step_events & PK_EV_BLACKOUT)
         handle_blackout(env);
 
     if (env->max_episode_length > 0 && env->step_count >= env->max_episode_length)
@@ -405,10 +336,6 @@ void puf_step(Env *env) {
     puf_step_body(env);
     env->be->release(env->impl);
 }
-
-// ---------------------------------------------------------------------------
-// Render / close / log
-// ---------------------------------------------------------------------------
 
 #include "pokered_render.h"
 

@@ -8,6 +8,8 @@
 #include "../includes/ram_map.h"
 #include "../pokered_layout.h"
 #include "../pokered_backend.h"
+#include "../pkstate.h"
+#include "step_events.h"
 
 extern "C" {
 #include "gamestate.h"
@@ -23,6 +25,7 @@ extern "C" {
 #include "type_chart.h"
 }
 #include "redcore_events.h"
+#include "redcore_start.h"
 #include "redcore_battle_text.h"
 
 #define REDCORE_POKEDEX_SLOTS 256
@@ -35,10 +38,20 @@ typedef enum RedcoreBattleMenu {
     RC_MENU_PARTY,
 } RedcoreBattleMenu;
 
+struct RcOptions {
+    char assets_dir[256];
+    int fixed_starter_species;
+    bool nickname_prompt_enabled, npc_text_enabled, npc_movement_enabled;
+    bool real_battle_ui_enabled, battle_text_enabled;
+};
+
 struct RcEnv {
     GameState gstate;
     PkBackendConfig cfg;
+    RcOptions opt;
+    PkEventTracker events;
     uint8_t fixed_starter_species;
+    RcStart start;
     uint8_t dex_owned[REDCORE_DEX_BYTES];
     uint8_t dex_seen[REDCORE_DEX_BYTES];
     int *event_bit;
@@ -48,23 +61,20 @@ struct RcEnv {
     uint8_t cursor_fight;
     uint8_t cursor_item;
     uint8_t cursor_party;
-    // Menu memory that outlives a single menu (see redcore_menu.h): the FIGHT cursor
-    // remembers the last used move slot (wPlayerMoveListIndex, even across battles) and the
-    // party list remembers its last cursor (wPartyAndBillsPCSavedMenuItem, per battle).
     uint8_t last_move_slot;
     uint8_t cursor_party_saved;
-    uint8_t party_stage;     // 0 = list, 1 = SWITCH/STATS/CANCEL box, 2 = stats page, 3 = refusal message
-    uint8_t party_msg;       // 1 = already out, 2 = fainted
-    uint8_t bag_scroll;      // first visible bag entry (wListScrollOffset); cursor_item is the absolute entry
-    uint8_t item_stage;      // 0 = bag list, 1 = "Use item on which POKeMON?", 2 = a message awaiting A/B
-    uint8_t item_pending;    // medicine waiting for its target
-    uint8_t item_msg;        // RC_ITEM_MSG_*
-    uint8_t cursor_action;   // cursor in the SWITCH/STATS/CANCEL box
+    uint8_t party_stage;
+    uint8_t party_msg;
+    uint8_t bag_scroll;
+    uint8_t item_stage;
+    uint8_t item_pending;
+    uint8_t item_msg;
+    uint8_t cursor_action;
     uint8_t player_selected_move;
     GameMode prev_mode;
-    uint8_t text_return_menu; // RC_MENU_* to show when a message phase ends (default main)
-    uint8_t struggle_turn;   // this turn is a forced Struggle (every move is out of PP)
-    RcTextPhase text;        // battle message phase, see redcore_battle_text.h (cfg.battle_text_enabled)
+    uint8_t text_return_menu;
+    uint8_t struggle_turn;
+    RcTextPhase text;
 
     uint8_t frame[160 * 144];
 };
@@ -129,11 +139,7 @@ static void rc_update_dex(RcEnv *env) {
 #include "redcore_menu.h"
 #include "redcore_item_names.h"
 #include "redcore_screen.h"
-#include "redcore_start.h"
 
-// Builds one party member from the emulator's captured RAM (redcore_start.h).
-// If the configured starter differs from the captured species it is swapped in
-// at the captured level with fresh base-stat moves/types/stats.
 static void rc_start_mon(PartyMon *m, const RcStartMon *c, bool is_starter, uint8_t starter_species,
                          const char *ot_name) {
     memset(m, 0, sizeof(*m));
@@ -186,56 +192,53 @@ static void rc_set_event_by_name(GameState *gs, const char *name) {
     fprintf(stderr, "redcore: start event '%s' has no redcore flag\n", name);
 }
 
-// Seeds the pokedex from the emulator's dex-number bitmaps (redcore tracks it by
-// internal species id).
-static void rc_seed_dex(RcEnv *env) {
+static void rc_seed_dex(RcEnv *env, const RcStart *st) {
     for (int id = 1; id < 191; id++) {
         int dex = SPECIES_ID_TO_DEX_NUMBER[id];
         if (dex < 1 || dex > 151) continue;
         int bit = dex - 1;
-        if ((RC_START_DEX_OWNED[bit / 8] >> (bit % 8)) & 1) rc_dex_mark(env->dex_owned, (uint8_t)id);
-        if ((RC_START_DEX_SEEN[bit / 8] >> (bit % 8)) & 1) rc_dex_mark(env->dex_seen, (uint8_t)id);
+        if ((st->dex_owned[bit / 8] >> (bit % 8)) & 1) rc_dex_mark(env->dex_owned, (uint8_t)id);
+        if ((st->dex_seen[bit / 8] >> (bit % 8)) & 1) rc_dex_mark(env->dex_seen, (uint8_t)id);
     }
 }
 
-// Start state = the emulator's RAM at reset (backends/redcore_start.h, regenerate
-// with tests/run_all.sh start): position, party, bag, money, events, pokedex.
 static void redcore_reset_to_fixed_start(RcEnv *env, unsigned *rng) {
     GameState *gs = &env->gstate;
+    const RcStart *st = &env->start;
 
     *rng = *rng * 1664525u + 1013904223u;
     gamestate_init(gs, *rng);
-    gs->nickname_prompt_enabled = env->cfg.nickname_prompt_enabled;
-    gs->npc_text_enabled = env->cfg.npc_text_enabled;
-    gs->npc_movement_enabled = env->cfg.npc_movement_enabled;
+    gs->nickname_prompt_enabled = env->opt.nickname_prompt_enabled;
+    gs->npc_text_enabled = env->opt.npc_text_enabled;
+    gs->npc_movement_enabled = env->opt.npc_movement_enabled;
     gs->npc_frames_per_step = env->cfg.frameskip > 0 ? (uint8_t)env->cfg.frameskip : REDCORE_NPC_FRAMES_PER_STEP;
 
-    strncpy(gs->player.name, RC_START_PLAYER_NAME, REDCORE_NAME_LENGTH - 1);
-    strncpy(gs->player.rival_name, RC_START_RIVAL_NAME, REDCORE_NAME_LENGTH - 1);
-    gs->player.money = RC_START_MONEY;
-    gs->player.badges = RC_START_BADGES;
+    strncpy(gs->player.name, st->player_name, REDCORE_NAME_LENGTH - 1);
+    strncpy(gs->player.rival_name, st->rival_name, REDCORE_NAME_LENGTH - 1);
+    gs->player.money = st->money;
+    gs->player.badges = st->badges;
 
-    for (int i = 0; i < RC_START_PARTY_COUNT && i < REDCORE_MAX_PARTY; i++)
-        rc_start_mon(&gs->party[i], &RC_START_PARTY[i], i == 0, env->fixed_starter_species, gs->player.name);
-    gs->party_count = RC_START_PARTY_COUNT;
+    for (int i = 0; i < st->party_count && i < REDCORE_MAX_PARTY; i++)
+        rc_start_mon(&gs->party[i], &st->party[i], i == 0, env->fixed_starter_species, gs->player.name);
+    gs->party_count = st->party_count;
     gs->active_party_slot = 0;
 
-    for (int i = 0; i < RC_START_BAG_COUNT; i++) bag_add_item(&gs->bag, RC_START_BAG[i][0], RC_START_BAG[i][1]);
+    for (int i = 0; i < st->bag_count; i++) bag_add_item(&gs->bag, st->bag[i][0], st->bag[i][1]);
 
-    for (int i = 0; i < RC_START_EVENT_COUNT; i++) rc_set_event_by_name(gs, RC_START_EVENTS[i]);
+    for (int i = 0; i < st->event_count; i++) rc_set_event_by_name(gs, st->events[i]);
     if (env->cfg.route22_rival_beaten) event_flag_set(&gs->flags, EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE);
     if (env->cfg.route22_rival_2nd_beaten) event_flag_set(&gs->flags, EVENT_BEAT_ROUTE22_RIVAL_2ND_BATTLE);
 
-    rc_seed_dex(env);
+    rc_seed_dex(env, st);
 
-    memcpy(gs->toggle_hidden, RC_START_TOGGLES, sizeof(gs->toggle_hidden));
+    memcpy(gs->toggle_hidden, st->toggles, sizeof(gs->toggle_hidden));
     if (env->cfg.route22_rival_beaten) overworld_hide_object(gs, TOGGLE_ROUTE_22_RIVAL_1);
     if (env->cfg.route22_rival_2nd_beaten) overworld_hide_object(gs, TOGGLE_ROUTE_22_RIVAL_2);
 
-    gs->player.map_id = RC_START_MAP;
-    gs->player.x = RC_START_X;
-    gs->player.y = RC_START_Y;
-    switch (RC_START_FACING_BYTE) {
+    gs->player.map_id = st->map;
+    gs->player.x = st->x;
+    gs->player.y = st->y;
+    switch (st->facing_byte) {
         case 0: gs->player.direction = DIR_SOUTH; break;
         case 4: gs->player.direction = DIR_NORTH; break;
         case 8: gs->player.direction = DIR_WEST; break;
@@ -272,10 +275,26 @@ static void fill_battle_mon(PkMon *o, const BattleMon *b) {
 
 namespace {
 
-void *rc_create(const PkBackendConfig *cfg) {
+void *rc_create(const PkBackendConfig *cfg, const PkOptions *opts) {
     RcEnv *env = (RcEnv *)calloc(1, sizeof(RcEnv));
     env->cfg = *cfg;
-    env->fixed_starter_species = (uint8_t)cfg->fixed_starter_species;
+    snprintf(env->opt.assets_dir, sizeof(env->opt.assets_dir), "%s", pk_opt_str(opts, "assets_dir", "vendor/redcore/assets"));
+    env->opt.fixed_starter_species = pk_opt_int(opts, "fixed_starter_species", 0);
+    env->opt.nickname_prompt_enabled = pk_opt_bool(opts, "nickname_prompt_enabled", false);
+    env->opt.npc_text_enabled = pk_opt_bool(opts, "npc_text_enabled", false);
+    env->opt.npc_movement_enabled = pk_opt_bool(opts, "npc_movement_enabled", false);
+    env->opt.real_battle_ui_enabled = pk_opt_bool(opts, "real_battle_ui_enabled", false);
+    env->opt.battle_text_enabled = pk_opt_bool(opts, "battle_text_enabled", false);
+
+    PkState state;
+    char err[512];
+    if (!pk_state_resolve(cfg->state_path, cfg->rom_path, cfg->pkstate_cache_enabled, &state, err, sizeof(err))) {
+        fprintf(stderr, "pokered: redcore backend: %s\n", err);
+        exit(1);
+    }
+    rc_start_decode(&state, &env->start);
+
+    env->fixed_starter_species = (uint8_t)env->opt.fixed_starter_species;
     if (env->fixed_starter_species != BULBASAUR && env->fixed_starter_species != CHARMANDER &&
         env->fixed_starter_species != SQUIRTLE) {
         env->fixed_starter_species = SQUIRTLE;
@@ -292,7 +311,7 @@ void *rc_create(const PkBackendConfig *cfg) {
             }
     }
 
-    if (cfg->screen_obs_enabled) redcore_load_atlases(cfg->assets_dir);
+    if (cfg->screen_obs_enabled) redcore_load_atlases(env->opt.assets_dir);
 
     unsigned rng = cfg->env_id;
     redcore_reset_to_fixed_start(env, &rng);
@@ -310,6 +329,7 @@ void rc_noop(void *) {}
 void rc_reset(void *impl, bool full_reset, unsigned *rng, bool *from_milestone) {
     RcEnv *env = (RcEnv *)impl;
     *from_milestone = false;
+    pk_events_rebase(&env->events);
     if (full_reset) {
         memset(env->dex_owned, 0, sizeof(env->dex_owned));
         memset(env->dex_seen, 0, sizeof(env->dex_seen));
@@ -338,7 +358,8 @@ void rc_cancel_wild_battle(RcEnv *env) {
 void rc_step(void *impl, int action, const PkSnapshot *) {
     RcEnv *env = (RcEnv *)impl;
     env->prev_mode = env->gstate.mode;
-    if (env->text.active) {  // a battle message phase: the engine is idle until the frames run out
+    pk_events_stepped(&env->events);
+    if (env->text.active) {
         rc_text_input(env, action);
         return;
     }
@@ -388,10 +409,7 @@ void rc_snapshot_now(RcEnv *env, PkSnapshot *s) {
         s->events[i] = env->event_bit[i] >= 0 && event_flag_get(&gs->flags, env->event_bit[i]) ? 1 : 0;
 }
 
-// While a battle text phase runs the engine is already past the event, so the policy keeps seeing
-// the snapshot from before it; only the battle mons' HP/level follow what the frame displays.
-void rc_snapshot(void *impl, PkSnapshot *s) {
-    RcEnv *env = (RcEnv *)impl;
+void rc_snapshot_state(RcEnv *env, PkSnapshot *s) {
     if (!env->text.active) {
         rc_snapshot_now(env, s);
         return;
@@ -412,6 +430,12 @@ void rc_snapshot(void *impl, PkSnapshot *s) {
         s->enemy_mon.hp = (uint16_t)tf->foe.hp;
         s->enemy_mon.max_hp = tf->foe.max_hp;
     }
+}
+
+void rc_snapshot(void *impl, PkSnapshot *s) {
+    RcEnv *env = (RcEnv *)impl;
+    rc_snapshot_state(env, s);
+    pk_events_apply(&env->events, s);
 }
 
 void rc_screen(void *impl, float *obs) {
@@ -444,11 +468,16 @@ void rc_blackout(void *impl) {
     RcEnv *env = (RcEnv *)impl;
     gamestate_check_and_handle_blackout(&env->gstate);
     env->battle_menu = RC_MENU_MAIN;
+    pk_events_rebase(&env->events);
 }
 
 const PkBackend REDCORE_BACKEND = {
-    "redcore", rc_create, rc_destroy, rc_noop, rc_noop, rc_reset, rc_noop, rc_step,
-    rc_snapshot, rc_screen, rc_blackout, NULL, NULL, NULL, rc_frame_rgba, NULL,
+    "redcore",
+    PK_CAP_FRAME_RGBA | PK_CAP_BLACKOUT,
+    PK_BTN_A | PK_BTN_B | PK_BTN_RIGHT | PK_BTN_LEFT | PK_BTN_UP | PK_BTN_DOWN,
+    rc_create, rc_destroy, rc_noop, rc_noop, rc_reset, rc_noop, rc_step, rc_snapshot, rc_screen,
+    rc_blackout,   NULL,   NULL,   NULL, rc_frame_rgba,
+      NULL,   NULL,
 };
 
 }
@@ -459,4 +488,4 @@ const PkBackend REDCORE_BACKEND = {
 #undef F
 #undef G
 
-extern "C" const PkBackend *pk_backend_redcore(void) { return &REDCORE_BACKEND; }
+PK_REGISTER_BACKEND(REDCORE_BACKEND)

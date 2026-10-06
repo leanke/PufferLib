@@ -1,9 +1,6 @@
 #ifndef POKERED_RENDER_H
 #define POKERED_RENDER_H
 
-// Desktop window: keyboard play (arrows held to move, Z=A, X=B pressed), S = quicksave,
-// O = toggle the 80x72 observation view (with visited-mask overlay).
-
 void puf_render(Env* env) {
     if (!IsWindowReady()) {
         SetTraceLogLevel(LOG_WARNING);
@@ -18,9 +15,6 @@ void puf_render(Env* env) {
         exit(0);
     }
 
-    // A/B fire once per key press (plus OS key repeat) rather than every frame
-    // they are held: one frame is one step, so a held A would otherwise skip a
-    // whole text box or type several letters on the naming keyboard.
     if (IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z)) {
         env->agents[0].actions[0] = PKRED_ACTION_A;
     } else if (IsKeyPressed(KEY_X) || IsKeyPressedRepeat(KEY_X)) {
@@ -39,11 +33,20 @@ void puf_render(Env* env) {
 
     if (IsKeyPressed(KEY_S)) {
         const char* save_path = "ocean/pokered/states/quicksave.state";
-        if (env->be->quicksave && env->be->quicksave(env->impl, save_path)) {
+        const char* pk_path = "ocean/pokered/states/quicksave.pkstate";
+        bool saved = false;
+        if ((env->be->caps & PK_CAP_QUICKSAVE) && env->be->quicksave(env->impl, save_path)) {
             printf("pokered: state saved to %s\n", save_path);
-        } else {
-            fprintf(stderr, "pokered: failed to save state to %s\n", save_path);
+            saved = true;
         }
+        PkState pk;
+        if ((env->be->caps & PK_CAP_EXPORT_STATE) && env->be->export_state(env->impl, &pk) &&
+            pk_state_write(pk_path, &pk)) {
+            printf("pokered: state saved to %s\n", pk_path);
+            saved = true;
+        }
+        if (!saved)
+            fprintf(stderr, "pokered: backend '%s' cannot save its state\n", env->be->name);
     }
 
     if (IsKeyPressed(KEY_O)) {
@@ -95,7 +98,7 @@ void puf_render(Env* env) {
             }
         }
         UpdateTexture(env->render_texture, env->render_pixels);
-    } else if (env->be->frame_rgba && env->be->frame_rgba(env->impl, env->render_pixels)) {
+    } else if ((env->be->caps & PK_CAP_FRAME_RGBA) && env->be->frame_rgba(env->impl, env->render_pixels)) {
         UpdateTexture(env->render_texture, env->render_pixels);
     }
 

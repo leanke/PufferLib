@@ -21,8 +21,6 @@
 #define PKR_ENC_VISITED_IN VISITED_MASK_OBS
 #define PKR_ENC_VISITED_HIDDEN 8
 
-// Species ids are embedded with one table shared by the party and both battle mons;
-// item ids are embedded with a second table. Level is scaled by /100, quantity by /99.
 #define PKR_SPECIES_VOCAB 256
 #define PKR_SPECIES_EMBED_DIM 8
 #define PKR_ITEM_VOCAB 256
@@ -30,7 +28,6 @@
 #define PKR_LEVEL_SCALE 100.0f
 #define PKR_ITEM_COUNT_SCALE 99.0f
 
-// Species slots: 0..PARTY_SIZE-1 are the party, then the player's and opponent's battle mon.
 #define PKR_BATTLE_PLAYER_SLOT PARTY_SIZE
 #define PKR_BATTLE_ENEMY_SLOT (PARTY_SIZE + 1)
 #define PKR_MON_SLOTS (PARTY_SIZE + 2)
@@ -186,7 +183,6 @@ __device__ __forceinline__ int pkr_mon_obs_offset(int slot) {
         ? BATTLE_PLAYER_MON_OFFSET : BATTLE_ENEMY_MON_OFFSET);
 }
 
-// Integer ids pulled out of the observation: species per mon slot, item per bag slot.
 __global__ void pkr_index_kernel(
         const precision_t* __restrict__ obs, int* __restrict__ species_idx,
         int* __restrict__ item_idx, int B, int obs_size) {
@@ -207,7 +203,6 @@ __global__ void pkr_index_kernel(
     }
 }
 
-// One mon slot: species embedding, level / 100, hp fraction.
 __device__ __forceinline__ float pkr_mon_feature(
         const precision_t* __restrict__ row, const precision_t* __restrict__ species_embed_w,
         const int* __restrict__ species_idx, int b, int slot, int f) {
@@ -233,7 +228,6 @@ __global__ void pkr_party_gather_kernel(
         species_idx, b, rem / PKR_MON_FEAT, rem % PKR_MON_FEAT));
 }
 
-// battle_type one-hot, then the player's and the opponent's mon.
 __global__ void pkr_battle_gather_kernel(
         const precision_t* __restrict__ obs, const precision_t* __restrict__ species_embed_w,
         const int* __restrict__ species_idx, precision_t* __restrict__ out, int B, int obs_size) {
@@ -296,7 +290,6 @@ __global__ void pkr_concat_kernel(
     out[idx] = bag_hidden[b * PKR_ENC_BAG_HIDDEN + c];
 }
 
-// Inverse of pkr_concat_kernel: routes the fused gradient back to each branch.
 __global__ void pkr_split_grad_kernel(
         const precision_t* __restrict__ grad_concat, precision_t* __restrict__ conv_grad,
         precision_t* __restrict__ visited_grad, precision_t* __restrict__ battle_grad,
@@ -319,7 +312,6 @@ __global__ void pkr_split_grad_kernel(
     bag_grad[b * PKR_ENC_BAG_HIDDEN + c] = g;
 }
 
-// Species table gradient: every party slot and both battle mons read it.
 __global__ void pkr_species_embed_wgrad_kernel(
         precision_t* __restrict__ wgrad, const precision_t* __restrict__ grad_party_in,
         const precision_t* __restrict__ grad_battle_in, const int* __restrict__ species_idx, int B) {
@@ -418,15 +410,12 @@ static void pkr_conv_wgrad(
     puf_mm_tn(&mm_t, &col_t, &wg_t, stream);
 }
 
-// Linear + ReLU over an already-built branch input.
 static void pkr_branch_forward(
         Prec* branch_in, Prec* branch_w, Prec* branch_out, int hidden, int B, cudaStream_t stream) {
     puf_mm(branch_in, branch_w, branch_out, stream);
     pkr_relu_kernel<<<grid_size(B * hidden), BLOCK_SIZE, 0, stream>>>(branch_out->data, B * hidden);
 }
 
-// Backward of pkr_branch_forward. With branch_w set, the input gradient is written over
-// branch_in (the embedding branches need it); the visited branch passes NULL.
 static void pkr_branch_backward(
         Prec* branch_grad, Prec* branch_out, Prec* branch_in, Prec* branch_wgrad,
         Prec* branch_w, int hidden, cudaStream_t stream) {
@@ -518,7 +507,6 @@ static void pokered_encoder_backward(
     pkr_branch_backward(&a->bag_grad, &a->bag_out, &a->bag_in, &a->bag_wgrad,
         &ew->bag_w, PKR_ENC_BAG_HIDDEN, stream);
 
-    // battle_in / party_in / bag_in now hold the gradient w.r.t. their inputs.
     pkr_species_embed_wgrad_kernel<<<grid_size(PKR_SPECIES_VOCAB * PKR_SPECIES_EMBED_DIM),
         BLOCK_SIZE, 0, stream>>>(a->species_embed_wgrad.data, a->party_in.data,
         a->battle_in.data, a->species_idx.data, B);

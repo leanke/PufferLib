@@ -1,18 +1,6 @@
 #ifndef POKERED_REWARDS_H
 #define POKERED_REWARDS_H
 
-// Reward = sum of seven weighted signals (weights live in config/pokered.ini):
-//   exploration  first visit to a new exploration cell (overworld movement only)
-//   catching     Pokedex "owned" count went up
-//   seeing       Pokedex "seen" count went up
-//   leveling     party levels went up
-//   events       each newly completed story/trainer event (flat, 1 per event)
-//   battling     a battle was won (enemy fainted, party still standing)
-//   death        party wiped out (applied by the step loop, see puf_step_body)
-//   fleeing      a battle was escaped by running (a penalty, off when weight_fleeing = 0)
-// Each signal_*() returns an unscaled amount; calculate_rewards() applies the
-// weight and records the weighted total in env->totals for logging.
-
 #include <string.h>
 
 static int party_level_sum(const PkSnapshot *s) {
@@ -58,8 +46,6 @@ static float signal_seeing(Env *env) {
   return 1.0f;
 }
 
-// Levels gained across the party this step. Early levels (party sum < 15) are
-// worth 4x later ones.
 static float signal_leveling(Env *env) {
   const PkSnapshot *cur = &env->cur, *prev = &env->prev;
   if (cur->party_count != prev->party_count)
@@ -80,46 +66,22 @@ static float signal_leveling(Env *env) {
   return level_sum < 15 ? (float)gained : (float)gained / 4.0f;
 }
 
-// 1 on the step a battle ends with the enemy fainted and our party alive.
-// Running away, catching (enemy still has HP) and whiting out all score 0.
-// Redcore counts wins itself (its last turn and the battle's end resolve in one
-// step, so the last in-battle snapshot still shows the enemy alive); on the
-// emulator the enemy is seen at 0 HP for several steps before the battle ends.
 static float signal_battling(Env *env) {
-  const PkSnapshot *cur = &env->cur, *prev = &env->prev;
-  bool won = cur->battles_won != prev->battles_won;
-  if (!won && is_battle_active(prev) && !is_battle_active(cur))
-    won = prev->enemy_mon.hp == 0 && cur->hp_fraction > 0.0f;
-  if (!won)
+  if (!(env->cur.step_events & PK_EV_BATTLE_WON))
     return 0.0f;
   if (env->verbose)
     printf("Won a battle!\n");
   return 1.0f;
 }
 
-// 1 on the step a battle ends because the player ran away. Redcore counts escapes
-// itself; on the emulator wEscapedFromBattle is set while the "Got away safely!" text
-// is still up, so it is latched during the battle and read when the battle ends.
 static float signal_fleeing(Env *env) {
-  const PkSnapshot *cur = &env->cur, *prev = &env->prev;
-  if (is_battle_active(cur) && cur->escaped)
-    env->escape_latched = true;
-  bool fled = cur->battles_fled != prev->battles_fled;
-  if (is_battle_active(prev) && !is_battle_active(cur)) {
-    fled = fled || env->escape_latched;
-    env->escape_latched = false;
-  } else if (!is_battle_active(cur)) {
-    env->escape_latched = false;
-  }
-  if (!fled)
+  if (!(env->cur.step_events & PK_EV_BATTLE_FLED))
     return 0.0f;
   if (env->verbose)
     printf("Ran from a battle\n");
   return 1.0f;
 }
 
-// Counts events completed this step (each pays the same) and hands the
-// non-trainer ones to the backend so it can capture milestone save states.
 static float signal_events(Env *env) {
   int fresh = 0;
   for (int i = 0; i < EVENT_COUNT; i++) {
@@ -128,7 +90,7 @@ static float signal_events(Env *env) {
       fresh++;
       if (env->verbose)
         printf("Event completed: %s\n", EVENT_LIST[i].name);
-      if (env->be->milestone_event && !strstr(EVENT_LIST[i].name, "Trainer"))
+      if ((env->be->caps & PK_CAP_MILESTONES) && !strstr(EVENT_LIST[i].name, "Trainer"))
         env->be->milestone_event(env->impl, i);
     }
     env->prev_events[i] = done;
@@ -143,11 +105,9 @@ static int completed_event_count(const PkSnapshot *s) {
   return n;
 }
 
-// Refreshes env->cur from the backend, scores the transition prev -> cur and
-// advances prev.
 static float calculate_rewards(Env *env) {
   env->be->snapshot(env->impl, &env->cur);
-  if (env->be->milestone_map)
+  if (env->be->caps & PK_CAP_MILESTONES)
     env->be->milestone_map(env->impl, env->cur.map_n, env->prev.map_n);
 
   float w_explore = env->weight_exploration;

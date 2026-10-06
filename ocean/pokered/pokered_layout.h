@@ -7,10 +7,9 @@
 #define SCALED_PIXELS (SCALED_WIDTH * SCALED_HEIGHT)
 
 #define PARTY_SIZE 6
-#define MON_FIELDS 3     // species, level, hp fraction (current_hp / max_hp)
+#define MON_FIELDS 3
 #define PARTY_OBS (PARTY_SIZE * MON_FIELDS)
 
-// battle_type, then the player's and the opponent's active mon (MON_FIELDS each).
 #define BATTLE_TYPE_NONE 0
 #define BATTLE_TYPE_WILD 1
 #define BATTLE_TYPE_TRAINER 2
@@ -19,7 +18,7 @@
 #define BATTLE_PLAYER_MON_OFFSET 1
 #define BATTLE_ENEMY_MON_OFFSET (1 + MON_FIELDS)
 
-#define BAG_SLOTS 20     // bag capacity; each slot is (item id, quantity), empty = 0, 0
+#define BAG_SLOTS 20
 #define BAG_FIELDS 2
 #define BAG_OBS (BAG_SLOTS * BAG_FIELDS)
 
@@ -46,5 +45,33 @@ typedef enum {
     PKRED_ACTION_DOWN,
     PKRED_ACTION_COUNT
 } PokeredAction;
+
+#define PK_BTN_A      0x01u
+#define PK_BTN_B      0x02u
+#define PK_BTN_SELECT 0x04u
+#define PK_BTN_START  0x08u
+#define PK_BTN_RIGHT  0x10u
+#define PK_BTN_LEFT   0x20u
+#define PK_BTN_UP     0x40u
+#define PK_BTN_DOWN   0x80u
+
+static inline unsigned pk_action_buttons(int action) {
+    switch (action) {
+    case PKRED_ACTION_A: return PK_BTN_A;
+    case PKRED_ACTION_B: return PK_BTN_B;
+    case PKRED_ACTION_RIGHT: return PK_BTN_RIGHT;
+    case PKRED_ACTION_LEFT: return PK_BTN_LEFT;
+    case PKRED_ACTION_UP: return PK_BTN_UP;
+    case PKRED_ACTION_DOWN: return PK_BTN_DOWN;
+    default: return 0;
+    }
+}
+
+static inline unsigned pk_all_action_buttons(void) {
+    unsigned mask = 0;
+    for (int a = 0; a < PKRED_ACTION_COUNT; a++)
+        mask |= pk_action_buttons(a);
+    return mask;
+}
 
 #endif

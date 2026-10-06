@@ -1,10 +1,6 @@
 #ifndef POKERED_VISITED_H
 #define POKERED_VISITED_H
 
-// Bit-packed (map, x, y) sets. Used twice per env: visited_coords (every tile
-// stepped on, feeds the visited-mask observation and unique_coords) and
-// visited_cells (coarse exploration cells, feeds the exploration reward).
-
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -24,7 +20,6 @@ static inline bool vbit_get(const uint8_t *bits, uint32_t idx) {
     return (bits[idx >> 3] >> (idx & 7)) & 1;
 }
 
-// Sets the bit; returns true only if it was previously clear.
 static inline bool vbit_test_set(uint8_t *bits, uint32_t idx) {
     uint8_t mask = (uint8_t)(1u << (idx & 7));
     if (bits[idx >> 3] & mask)

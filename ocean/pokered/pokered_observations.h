@@ -1,9 +1,6 @@
 #ifndef POKERED_OBSERVATIONS_H
 #define POKERED_OBSERVATIONS_H
 
-// PkSnapshot -> flat observation vector. Segment layout and sizes are in
-// pokered_layout.h; per-segment contents are documented in policy.md.
-
 #include <math.h>
 #include <string.h>
 
@@ -28,8 +25,6 @@ static void observe_visited_mask(const Env *env, obs_t *out) {
   }
 }
 
-// Every writer below overwrites its whole segment, writing zeros for anything that
-// does not apply (no battle, empty party/bag slots), so stale RAM never leaks through.
 static void observe_mon(const PkMon *m, obs_t *out) {
   out[0] = (float)m->species;
   out[1] = (float)m->level;
