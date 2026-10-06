@@ -28,11 +28,6 @@ typedef struct {
     uint8_t pokedex_owned_count, pokedex_seen_count;
     float hp_fraction;
 
-    uint16_t blackouts;
-
-    uint16_t battles_won;
-
-    uint16_t battles_fled;
     uint8_t escaped;
 
     int8_t in_battle;

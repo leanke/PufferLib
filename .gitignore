@@ -2,7 +2,6 @@
 .claude/
 vendor/gambatte-libretro/
 vendor/pokered/
-vendor/redcore/
 vendor/pokered-native/
 ocean/pokered/tests/
 *.md

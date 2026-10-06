@@ -68,7 +68,7 @@ void *emu_create(const PkBackendConfig *cfg, const PkOptions *opts) {
     if (state_len >= ext_len && strcmp(cfg->state_path + state_len - ext_len, PK_STATE_EXT) == 0) {
         fprintf(stderr,
                 "pokered: the emulator backend resumes a Gambatte save state; state_path %s is a .pkstate "
-                "(RAM only, for redcore/native). Point state_path at the Gambatte state it was converted from.\n",
+                "(RAM only, for native). Point state_path at the Gambatte state it was converted from.\n",
                 cfg->state_path);
         exit(1);
     }

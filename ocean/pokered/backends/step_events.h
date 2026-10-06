@@ -13,7 +13,7 @@ typedef struct PkEventTracker {
     bool escape_latched;
     uint32_t last;
     bool battle_active;
-    uint16_t enemy_hp, blackouts, battles_won, battles_fled;
+    uint16_t enemy_hp;
 } PkEventTracker;
 
 static inline void pk_events_rebase(PkEventTracker *t) {
@@ -31,26 +31,21 @@ static inline void pk_events_apply(PkEventTracker *t, PkSnapshot *s) {
     if (t->pending && !t->rebase) {
         uint32_t ev = 0;
 
-        bool won = s->battles_won != t->battles_won;
-        if (!won && t->battle_active && !active)
-            won = t->enemy_hp == 0 && s->hp_fraction > 0.0f;
+        bool won = t->battle_active && !active && t->enemy_hp == 0 && s->hp_fraction > 0.0f;
         if (won) ev |= PK_EV_BATTLE_WON;
 
         if (active && s->escaped)
             t->escape_latched = true;
-        bool fled = s->battles_fled != t->battles_fled;
+        bool fled = false;
         if (t->battle_active && !active) {
-            fled = fled || t->escape_latched;
+            fled = t->escape_latched;
             t->escape_latched = false;
         } else if (!active) {
             t->escape_latched = false;
         }
         if (fled) ev |= PK_EV_BATTLE_FLED;
 
-        if (s->blackouts != t->blackouts) {
-            t->wiped = false;
-            ev |= PK_EV_BLACKOUT;
-        } else if (s->party_count == 0 || s->hp_fraction > 0.0f) {
+        if (s->party_count == 0 || s->hp_fraction > 0.0f) {
             t->wiped = false;
         } else {
             if (!t->wiped) ev |= PK_EV_BLACKOUT;
@@ -61,9 +56,6 @@ static inline void pk_events_apply(PkEventTracker *t, PkSnapshot *s) {
     if (t->pending || t->rebase) {
         t->battle_active = active;
         t->enemy_hp = s->enemy_mon.hp;
-        t->blackouts = s->blackouts;
-        t->battles_won = s->battles_won;
-        t->battles_fled = s->battles_fled;
     }
     t->pending = t->rebase = false;
     s->step_events = t->last;

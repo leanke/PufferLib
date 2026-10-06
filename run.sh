@@ -45,9 +45,8 @@ prompt_bool() {
 
 prompt_backend() {
     local answer
-    read -r -p "env.backend [emulator/redcore/native, blank = emulator]: " answer >&2
+    read -r -p "env.backend [emulator/native, blank = emulator]: " answer >&2
     case "$answer" in
-        r|R|redcore) echo "redcore" ;;
         n|N|native) echo "native" ;;
         *) echo "emulator" ;;
     esac
@@ -76,17 +75,18 @@ run() {
             ;;
         eval)
             # Headless single-agent eval; run_eval already forces verbose
-            # dashboard output for eval/match modes.
+            # dashboard output for eval/match modes. max_episode_length=0 disables the
+            # step cap (endless episode); a trailing override still wins.
             local verbose backend
             backend="$(prompt_backend)"
             verbose="$(prompt_bool "env.verbose" "True")"
-            exec ./puffer eval latest "--env.backend=$backend" "--env.verbose=$verbose" "$@"
+            exec ./puffer eval latest "--env.backend=$backend" "--env.verbose=$verbose" "--env.max_episode_length=0" "$@"
             ;;
         pokered)
             local verbose
             ./build.sh pokered
             verbose="$(prompt_bool "env.verbose" "True")"
-            exec ./pokered "--env.verbose=$verbose" "$@"
+            exec ./pokered "--env.verbose=$verbose" "--env.max_episode_length=0" "$@"
             ;;
         build)
             local env
@@ -100,7 +100,6 @@ run() {
                 echo "no env given" >&2
                 exit 1
             fi
-            [ "$env" = "redcore" ] && env="pokered"  # redcore is a pokered backend (--env.backend=redcore)
             exec ./build.sh "$env" "$@"
             ;;
         *)
