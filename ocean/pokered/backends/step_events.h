@@ -14,6 +14,8 @@ typedef struct PkEventTracker {
     uint32_t last;
     bool battle_active;
     uint16_t enemy_hp;
+    bool cut_fired, cut_swapped;
+    uint16_t cut_wait;
 } PkEventTracker;
 
 static inline void pk_events_rebase(PkEventTracker *t) {
@@ -22,6 +24,8 @@ static inline void pk_events_rebase(PkEventTracker *t) {
     t->wiped = false;
     t->escape_latched = false;
     t->last = 0;
+    t->cut_fired = t->cut_swapped = false;
+    t->cut_wait = 0;
 }
 
 static inline void pk_events_stepped(PkEventTracker *t) { t->pending = true; }
@@ -59,6 +63,7 @@ static inline void pk_events_apply(PkEventTracker *t, PkSnapshot *s) {
     }
     t->pending = t->rebase = false;
     s->step_events = t->last;
+    s->cut_used = t->cut_fired;
 }
 
 #endif

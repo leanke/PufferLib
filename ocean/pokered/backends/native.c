@@ -53,6 +53,7 @@ static void fill_mon(PkMon *m, const PartyMon *p) {
     m->hp = p->current_hp;
     m->max_hp = p->max_hp;
     memcpy(m->moves, p->moves, sizeof(m->moves));
+    memcpy(m->pp, p->pp, sizeof(m->pp));
 }
 
 static void fill_battler(PkMon *m, const BattleMon *b) {
@@ -147,6 +148,8 @@ static void nat_reset(void *impl, bool full_reset, unsigned *rng) {
         fprintf(stderr, "pokered: native backend could not restore its start state\n");
         exit(1);
     }
+    PkRam ram = {NULL, ram_read, ram_write};
+    pk_ram_clear_cut(&ram, &be->events);
 }
 
 static void nat_step(void *impl, int action, const PkSnapshot *last) {
@@ -171,6 +174,7 @@ static void nat_step(void *impl, int action, const PkSnapshot *last) {
         for (int f = 0; f < skip; f++)
             game_frame(be->ctx, f < press ? keys : 0);
     }
+    pk_ram_track_cut(&ram, &be->events, last);
     pk_events_stepped(&be->events);
 }
 
@@ -211,6 +215,12 @@ static void nat_snapshot(void *impl, PkSnapshot *s) {
         s->bag[i].item = g_wram.bag_items[2 * i];
         s->bag[i].count = g_wram.bag_items[2 * i + 1];
     }
+
+    s->surfing = g_wram.walk_bike_surf_state == PKRED_SURF_STATE;
+    s->strength_active = g_wram.status_flags1.strength_active;
+    s->used_fly = g_wram.status_flags7.used_fly;
+    s->dark_cave = g_wram.map_pal_offset == PKRED_PAL_DARK_CAVE;
+    s->map_block_hash = pkred_hash_bytes(g_wram.overworld_map, PKRED_OVERWORLD_MAP_SIZE);
 
     for (size_t i = 0; i < EVENT_COUNT; ++i)
         s->events[i] = (mem_read(EVENT_LIST[i].address) >> EVENT_LIST[i].bit) & 1;
@@ -282,6 +292,8 @@ static bool nat_state_load(void *impl, const void *buf) {
     if (!pokered_state_load(be->handle, be->ctx, buf, pokered_state_size()))
         return false;
     pk_events_rebase(&be->events);
+    PkRam ram = {NULL, ram_read, ram_write};
+    pk_ram_clear_cut(&ram, &be->events);
     return true;
 }
 

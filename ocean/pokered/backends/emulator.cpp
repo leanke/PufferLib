@@ -42,6 +42,8 @@ void fill_mon(PkMon *m, Emulator *emu, const uint8_t *b, uint16_t base) {
     m->max_hp = rd16(emu, b, base + offsetof(PkredPartyMon, max_hp_hi));
     for (int k = 0; k < 4; k++)
         m->moves[k] = rd(emu, b, base + offsetof(PkredPartyMon, moves) + k);
+    for (int k = 0; k < 4; k++)
+        m->pp[k] = rd(emu, b, base + offsetof(PkredPartyMon, pp) + k);
 }
 
 void fill_battler(PkMon *m, Emulator *emu, const uint8_t *b, uint16_t species, uint16_t hp, uint16_t maxhp,
@@ -124,6 +126,8 @@ void emu_reset(void *impl, bool full_reset, unsigned *rng) {
     if (be->cfg.verbose)
         printf("-- Resetting from initial state --\n");
     gambatte_load_state_raw(emu->gb, emu->pool_initial_state_buf);
+    PkRam ram = {emu, ram_read, ram_write};
+    pk_ram_clear_cut(&ram, &be->events);
 }
 
 void emu_warmup(void *impl) {
@@ -144,6 +148,7 @@ void emu_step(void *impl, int action, const PkSnapshot *last) {
     int press = emu->press_frames > 0 ? emu->press_frames : 8;
     uint32_t key = pk_action_buttons(action);
     STEP_ACTION_FRAMES(emu->gb, key, emu->video_buffer, press, skip);
+    pk_ram_track_cut(&ram, &be->events, last);
     pk_events_stepped(&be->events);
 }
 
@@ -196,6 +201,15 @@ void emu_snapshot(void *impl, PkSnapshot *s) {
         s->bag[i].count = b[PKRED_ADDR_BAG_ITEMS + 2 * i + 1 - 0xD000];
     }
 
+    s->surfing = b[PKRED_ADDR_WALK_BIKE_SURF - 0xD000] == PKRED_SURF_STATE;
+    s->strength_active = (b[PKRED_ADDR_STATUS_FLAGS1 - 0xD000] >> PKRED_STATUS_FLAGS1_STRENGTH_BIT) & 1;
+    s->used_fly = (b[PKRED_ADDR_STATUS_FLAGS7 - 0xD000] >> PKRED_STATUS_FLAGS7_USED_FLY_BIT) & 1;
+    s->dark_cave = b[PKRED_ADDR_MAP_PAL_OFFSET - 0xD000] == PKRED_PAL_DARK_CAVE;
+    uint8_t blocks[PKRED_OVERWORLD_MAP_SIZE];
+    for (int i = 0; i < PKRED_OVERWORLD_MAP_SIZE; i++)
+        blocks[i] = read_mem(emu, PKRED_ADDR_OVERWORLD_MAP + i);
+    s->map_block_hash = pkred_hash_bytes(blocks, PKRED_OVERWORLD_MAP_SIZE);
+
     for (size_t i = 0; i < EVENT_COUNT; ++i)
         s->events[i] = (b[EVENT_LIST[i].address - 0xD000] >> EVENT_LIST[i].bit) & 1;
 
@@ -234,6 +248,8 @@ bool emu_state_load(void *impl, const void *buf) {
     EmuBackend *be = (EmuBackend *)impl;
     gambatte_load_state_raw(be->emu.gb, (const uint8_t *)buf);
     pk_events_rebase(&be->events);
+    PkRam ram = {&be->emu, ram_read, ram_write};
+    pk_ram_clear_cut(&ram, &be->events);
     return true;
 }
 

@@ -6,6 +6,7 @@
 
 #include "../includes/ram_map.h"
 #include "../pokered_backend.h"
+#include "step_events.h"
 
 #define PK_VIRIDIAN_CITY_MAP 0x01
 
@@ -20,6 +21,38 @@ static inline void pk_ram_set_missable_hidden(const PkRam *ram, uint8_t missable
     uint8_t bit = missable_index & 7;
     uint8_t byte = ram->read(ram->ctx, addr);
     ram->write(ram->ctx, addr, hidden ? (byte | (1 << bit)) : (byte & ~(1 << bit)));
+}
+
+#define PK_CUT_STALE_STEPS 64
+
+static inline void pk_ram_clear_cut(const PkRam *ram, PkEventTracker *t) {
+    ram->write(ram->ctx, PKRED_ADDR_CUT_TILE, 0);
+    t->cut_swapped = false;
+    t->cut_wait = 0;
+}
+
+/* wCutTile is written only by a successful Cut and never cleared by the game, so it is zeroed
+   once the animation is over (tree block swapped, sprites no longer animating); the step that
+   observes that is the one cut_used fires. Zeroing earlier would break AnimCut, which reads it. */
+static inline void pk_ram_track_cut(const PkRam *ram, PkEventTracker *t, const PkSnapshot *last) {
+    t->cut_fired = false;
+    if (!ram->read(ram->ctx, PKRED_ADDR_CUT_TILE)) {
+        t->cut_swapped = false;
+        t->cut_wait = 0;
+        return;
+    }
+    if (!t->cut_swapped) {
+        uint8_t blocks[PKRED_OVERWORLD_MAP_SIZE];
+        for (int i = 0; i < PKRED_OVERWORLD_MAP_SIZE; i++)
+            blocks[i] = ram->read(ram->ctx, PKRED_ADDR_OVERWORLD_MAP + i);
+        t->cut_swapped = pkred_hash_bytes(blocks, PKRED_OVERWORLD_MAP_SIZE) != last->map_block_hash;
+    }
+    if (t->cut_swapped && ram->read(ram->ctx, PKRED_ADDR_UPDATE_SPRITES) != PKRED_SPRITES_ANIMATING) {
+        t->cut_fired = true;
+        pk_ram_clear_cut(ram, t);
+    } else if (++t->cut_wait > PK_CUT_STALE_STEPS) {
+        pk_ram_clear_cut(ram, t);
+    }
 }
 
 static inline void pk_ram_apply_scenario(const PkRam *ram, const PkBackendConfig *cfg, const PkSnapshot *last) {

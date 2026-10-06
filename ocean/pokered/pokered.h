@@ -21,7 +21,7 @@ typedef float obs_t;
 #define NUM_ATNS 1
 
 typedef struct {
-    float explore, catching, seeing, leveling, events, battling, death, fleeing;
+    float explore, catching, seeing, leveling, events, battling, death, fleeing, healing, hm_taught, hm_used;
 } RewardTotals;
 
 struct Log {
@@ -84,6 +84,11 @@ struct Env {
     float weight_battling;
     float weight_death;
     float weight_fleeing;
+    float weight_healing;
+    float weight_hm_taught;
+    float weight_hm_used;
+    bool hm_used_once;
+    uint8_t hm_used_mask;
     int exploration_cell_size;
     bool exploration_death_scaling_enabled;
 
@@ -162,6 +167,10 @@ static void read_reward_config(Env *env, Dict *kw) {
     env->weight_battling = kw_float(kw, "weight_battling");
     env->weight_death = kw_float(kw, "weight_death");
     env->weight_fleeing = kw_float(kw, "weight_fleeing");
+    env->weight_healing = kw_float(kw, "weight_healing");
+    env->weight_hm_taught = kw_float(kw, "weight_hm_taught");
+    env->weight_hm_used = kw_float(kw, "weight_hm_used");
+    env->hm_used_once = kw_bool(kw, "hm_used_once");
     env->exploration_cell_size = kw_int(kw, "exploration_cell_size");
     if (env->exploration_cell_size <= 0)
         env->exploration_cell_size = 1;
@@ -276,6 +285,7 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->step_count = 0;
     env->score = 0.0f;
     env->prev_action = -1;
+    env->hm_used_mask = 0;
     memset(&env->totals, 0, sizeof(env->totals));
     memcpy(env->prev_events, env->cur.events, EVENT_COUNT);
 
@@ -379,6 +389,9 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "battling_signal", log->reward.battling);
     dict_set(out, "death_signal", log->reward.death);
     dict_set(out, "fleeing_signal", log->reward.fleeing);
+    dict_set(out, "healing_signal", log->reward.healing);
+    dict_set(out, "hm_taught_signal", log->reward.hm_taught);
+    dict_set(out, "hm_used_signal", log->reward.hm_used);
 
     dict_set(out, "milestone_pool_size", log->milestone_pool_size);
     dict_set(out, "reset_from_milestone", log->reset_from_milestone);

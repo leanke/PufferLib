@@ -177,6 +177,33 @@ static const uint8_t PKRED_KEY_ITEM_IDS[PKRED_KEY_ITEMS] = {
 
 #define PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION 0xC109u
 
+#define PKRED_POKECENTER_MAPS 12
+static const uint8_t PKRED_POKECENTER_MAP_IDS[PKRED_POKECENTER_MAPS] = {
+    41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 174, 182,
+};
+
+#define PKRED_ADDR_OVERWORLD_MAP     0xC6E8u
+#define PKRED_OVERWORLD_MAP_SIZE     1300
+#define PKRED_ADDR_CUT_TILE          0xCD4Du
+#define PKRED_ADDR_UPDATE_SPRITES    0xCFCBu
+#define PKRED_SPRITES_ANIMATING      0xFFu
+#define PKRED_ADDR_MAP_PAL_OFFSET    0xD35Du
+#define PKRED_ADDR_WALK_BIKE_SURF    0xD700u
+#define PKRED_ADDR_STATUS_FLAGS1     0xD728u
+#define PKRED_STATUS_FLAGS1_STRENGTH_BIT 0u
+#define PKRED_ADDR_STATUS_FLAGS7     0xD733u
+#define PKRED_STATUS_FLAGS7_USED_FLY_BIT 7u
+#define PKRED_SURF_STATE             2u
+#define PKRED_PAL_DARK_CAVE          6u
+#define PKRED_PP_MASK                0x3Fu
+
+static inline uint32_t pkred_hash_bytes(const uint8_t *p, int n) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < n; i++)
+        h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
 #define PKRED_MOVE_CUT      15u
 #define PKRED_MOVE_FLY      19u
 #define PKRED_MOVE_SURF     57u

@@ -17,6 +17,7 @@ typedef struct {
     uint8_t species, level;
     uint16_t hp, max_hp;
     uint8_t moves[4];
+    uint8_t pp[4];
 } PkMon;
 
 typedef struct {
@@ -37,6 +38,9 @@ typedef struct {
     uint8_t bag_count;
     struct { uint8_t item, count; } bag[20];
 
+    uint8_t surfing, strength_active, used_fly, dark_cave, cut_used;
+    uint32_t map_block_hash;
+
     uint8_t events[PK_MAX_EVENTS];
 
     uint32_t step_events;
@@ -47,6 +51,14 @@ typedef enum {
     PK_EV_BATTLE_WON = 1u << 1,
     PK_EV_BATTLE_FLED = 1u << 2,
 } PkStepEvent;
+
+enum {
+    PK_HM_USE_CUT = 1u << 0,
+    PK_HM_USE_SURF = 1u << 1,
+    PK_HM_USE_STRENGTH = 1u << 2,
+    PK_HM_USE_FLASH = 1u << 3,
+    PK_HM_USE_FLY = 1u << 4,
+};
 
 typedef struct {
     unsigned env_id;
