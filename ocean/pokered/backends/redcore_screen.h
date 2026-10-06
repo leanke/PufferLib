@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "redcore_battle_gfx.h"
+
 #define RC_FRAME_W 160
 #define RC_FRAME_H 144
 #define RC_FRAME_PIXELS (RC_FRAME_W * RC_FRAME_H)
@@ -297,7 +299,8 @@ static void rc_glyph(uint8_t *f, int x, int y, char c, uint8_t color);
 static void rc_text(uint8_t *f, int x, int y, const char *s, uint8_t color);
 static void rc_dialogue_box(uint8_t *f, const char *text, bool more);
 
-static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
+// The original schematic battle screen (bars and boxes), kept for [env] real_battle_ui_enabled = False.
+static void redcore_draw_battle_schematic(const RcEnv *env, uint8_t *f) {
     const GameState *gs = &env->gstate;
     const BattleState *bs = &gs->battle;
     memset(f, 255, RC_FRAME_PIXELS);
@@ -410,6 +413,366 @@ static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
             rc_dialogue_box(f, msg, true);
         }
     }
+}
+
+// ---- Tile-based battle UI ---------------------------------------------------
+// The battle screen is composed like the real one: a 20x18 map of character codes drawn with the
+// game's own font / HUD tiles (backends/redcore_battle_gfx.h), over the two pics. Layouts below were
+// read from the emulator's wTileMap (0xC3A0) at the same menus.
+#define RC_TM_W 20
+#define RC_TM_H 18
+#define RC_TM_NONE 0x100  // cell not drawn (whatever is already in the frame shows through)
+#define RC_TM_SPACE 0x7F
+typedef uint16_t RcTileMap[RC_TM_H][RC_TM_W];
+
+static void rc_tm_clear(RcTileMap tm) {
+    for (int y = 0; y < RC_TM_H; y++)
+        for (int x = 0; x < RC_TM_W; x++) tm[y][x] = RC_TM_NONE;
+}
+
+static void rc_tm_put(RcTileMap tm, int x, int y, unsigned code) {
+    if (x >= 0 && x < RC_TM_W && y >= 0 && y < RC_TM_H) tm[y][x] = (uint16_t)code;
+}
+
+static unsigned rc_char_code(char c) {
+    if (c >= 'A' && c <= 'Z') return 0x80 + (c - 'A');
+    if (c >= 'a' && c <= 'z') return 0xA0 + (c - 'a');
+    if (c >= '0' && c <= '9') return 0xF6 + (c - '0');
+    switch (c) {
+        case '(': return 0x9A; case ')': return 0x9B; case ':': return 0x9C; case ';': return 0x9D;
+        case '[': return 0x9E; case ']': return 0x9F; case '\'': return 0xE0; case '-': return 0xE3;
+        case '?': return 0xE6; case '!': return 0xE7; case '.': return 0xE8; case '/': return 0xF3;
+        case ',': return 0xF4; case '$': return 0xF0; case '\001': return 0xBA; case '\002': return 0xEF;
+        case '\003': return 0xF5;
+        default: return RC_TM_SPACE;
+    }
+}
+
+// A letter followed by 's/'d/'l/'t/'v/'r/'m uses the font's one-tile contraction glyphs.
+static void rc_tm_text(RcTileMap tm, int x, int y, const char *s) {
+    for (const char *p = s; *p; p++, x++) {
+        const char *c = strchr("dlstvrm", p[1] ? p[1] : '!');
+        if (*p == '\'' && p > s && p[1] && c && ((p[-1] >= 'A' && p[-1] <= 'Z') || (p[-1] >= 'a' && p[-1] <= 'z'))) {
+            static const uint8_t TILE[] = {0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xE4, 0xE5};  // 'd 'l 's 't 'v 'r 'm
+            rc_tm_put(tm, x, y, TILE[c - "dlstvrm"]);
+            p++;
+        } else {
+            rc_tm_put(tm, x, y, rc_char_code(*p));
+        }
+    }
+}
+
+// A text-box frame: corners/edges in the border tiles, interior cleared to blank.
+static void rc_tm_box(RcTileMap tm, int x0, int y0, int x1, int y1) {  // inclusive cell bounds
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            bool l = x == x0, r = x == x1, t = y == y0, b = y == y1;
+            unsigned c = RC_TM_SPACE;
+            if (t) c = l ? 0x79 : r ? 0x7B : 0x7A;
+            else if (b) c = l ? 0x7D : r ? 0x7E : 0x7A;
+            else if (l || r) c = 0x7C;
+            rc_tm_put(tm, x, y, c);
+        }
+}
+
+static void rc_draw_tilemap(uint8_t *f, RcTileMap tm) {
+    for (int ty = 0; ty < RC_TM_H; ty++)
+        for (int tx = 0; tx < RC_TM_W; tx++) {
+            unsigned code = tm[ty][tx];
+            if (code == RC_TM_NONE) continue;
+            const uint8_t *px = NULL;
+            if (code >= 0x80) px = RC_FONT_TILES[code - 0x80];
+            else if (code >= 0x6D && code <= 0x6F) px = RC_BATTLE_HUD_TILES[code - 0x6D];
+            else if (code >= 0x73 && code <= 0x78) px = RC_BATTLE_HUD_TILES[code - 0x73 + 3];
+            else if (code >= 0x62 && code <= 0x78) px = RC_BATTLE_EXTRA_TILES[code - 0x62];
+            else if (code >= 0x60 && code < 0x80) px = RC_FONT_EXTRA_TILES[code - 0x60];
+            for (int y = 0; y < 8; y++)
+                for (int x = 0; x < 8; x++)
+                    f[(ty * 8 + y) * RC_FRAME_W + tx * 8 + x] = (code == RC_TM_SPACE || !px) ? 255 : px[y * 8 + x];
+        }
+}
+
+static void rc_tm_number(RcTileMap tm, int x, int y, unsigned v, int width, bool pad) {  // right-aligned in `width`
+    char buf[8];
+    if (pad) snprintf(buf, sizeof(buf), "%*u", width, v);
+    else snprintf(buf, sizeof(buf), "%u", v);
+    rc_tm_text(tm, x, y, buf);
+}
+
+// Name, level (or status), and the HP bar of one battler. The enemy panel is the thin top-left one
+// (name at 1,0; bar closes with 0x6C), the player's the lower-right one (name at 10,7, HP numbers
+// beneath the bar). Mirrors DrawEnemyHUDAndHPBars / DrawPlayerHUDAndHPBars.
+static void rc_tm_hud(RcTileMap tm, const RcDispMon *m, bool player) {
+    int nx = player ? 10 : 1, ny = player ? 7 : 0;
+    char name[12];
+    snprintf(name, sizeof(name), "%s", rc_species_name(m->species));
+    rc_tm_text(tm, nx, ny, name);
+
+    int lx = player ? 14 : 4, ly = ny + 1;
+    const char *status = m->hp <= 0 ? "FNT" : rc_status_text(m->status);
+    if (status[0]) {
+        rc_tm_text(tm, lx + 1, ly, status);
+    } else {
+        rc_tm_put(tm, lx, ly, 0x6E);  // :L
+        rc_tm_number(tm, lx + 1, ly, m->level, 1, false);
+    }
+
+    int bx = player ? 10 : 2, by = player ? 9 : 2;
+    rc_tm_put(tm, bx, by, 0x71);      // HP:
+    rc_tm_put(tm, bx + 1, by, 0x62);  // bar start
+    int px = 0;
+    if (m->max_hp > 0 && m->hp > 0) {
+        px = (int)((uint32_t)m->hp * 48 / m->max_hp);
+        if (px < 1) px = 1;
+    }
+    for (int i = 0; i < 6; i++) {
+        int seg = px - i * 8;
+        seg = seg < 0 ? 0 : seg > 8 ? 8 : seg;
+        rc_tm_put(tm, bx + 2 + i, by, 0x63 + seg);  // 0x63 empty .. 0x6B full
+    }
+    rc_tm_put(tm, bx + 8, by, player ? 0x6D : 0x6C);
+    if (player) {
+        char nums[12];
+        snprintf(nums, sizeof(nums), "%3u/%3u", (unsigned)(m->hp < 0 ? 0 : m->hp), m->max_hp);
+        rc_tm_text(tm, 11, 10, nums);
+        rc_tm_put(tm, 18, 10, 0x73);
+        rc_tm_put(tm, 9, 11, 0x6F);
+        for (int i = 0; i < 8; i++) rc_tm_put(tm, 10 + i, 11, 0x76);
+        rc_tm_put(tm, 18, 11, 0x77);
+    } else {
+        rc_tm_put(tm, 1, 2, 0x73);
+        rc_tm_put(tm, 1, 3, 0x74);
+        for (int i = 0; i < 8; i++) rc_tm_put(tm, 2 + i, 3, 0x76);
+        rc_tm_put(tm, 10, 3, 0x78);
+    }
+}
+
+// Pic placement, matched pixel-for-pixel against the emulator: a front pic sits in a 7x7-tile frame
+// at (96,0), centered by tiles and bottom-aligned; the back pic is its 32x32 art doubled at (8,40).
+static void rc_draw_foe_pic(uint8_t *f, unsigned species) {
+    const RedcoreAtlas *front = (species < NUM_POKEMON_PIC_ASSETS) ? &g_redcore_front_atlas[species] : NULL;
+    if (front && front->gray) {
+        int tw = front->w / 8, th = front->h / 8;
+        rc_blit(f, front, 96 + ((7 - tw + 1) / 2) * 8, (7 - th) * 8);
+    } else {
+        rc_box(f, 96, 8, 144, 56, 85, 0);
+    }
+}
+
+static void rc_draw_back_pic_2x(uint8_t *f, const uint8_t *gray, int w, int h) {
+    for (int py = 0; py < h * 2; py++)
+        for (int px = 0; px < w * 2; px++) {
+            int dx = 8 + px, dy = 40 + py;
+            if (dx < RC_FRAME_W && dy < RC_FRAME_H) f[dy * RC_FRAME_W + dx] = gray[(py / 2) * w + px / 2];
+        }
+}
+
+static void rc_draw_me_pic(uint8_t *f, unsigned species) {
+    const RedcoreAtlas *back = (species < NUM_POKEMON_PIC_ASSETS) ? &g_redcore_back_atlas[species] : NULL;
+    if (back && back->gray) rc_draw_back_pic_2x(f, back->gray, back->w, back->h);
+    else rc_box(f, 8, 40, 64, 96, 85, 0);
+}
+
+static void rc_draw_trainer_pic(uint8_t *f) { rc_draw_back_pic_2x(f, RC_PLAYER_BACK_PIC, 32, 32); }
+
+static void rc_draw_battle_pics(const RcEnv *env, uint8_t *f, bool player_visible) {
+    const BattleState *bs = &env->gstate.battle;
+    rc_draw_foe_pic(f, bs->enemy.species);
+    if (player_visible) rc_draw_me_pic(f, bs->player.species);
+}
+
+static void redcore_draw_battle_real(const RcEnv *env, uint8_t *f) {
+    const GameState *gs = &env->gstate;
+    const BattleState *bs = &gs->battle;
+    memset(f, 255, RC_FRAME_PIXELS);
+    const bool safari = gs->mode == GAME_MODE_SAFARI_BATTLE;
+
+    RcTileMap tm;
+    bool tm_drawn = false;
+    rc_tm_clear(tm);
+    rc_draw_battle_pics(env, f, !safari);
+    if (safari) {
+        rc_hp_bar(f, 8, 12, 64, rc_battle_hp_frac(&bs->enemy));
+    } else {
+        RcDispMon foe = rc_disp_from_battle(&bs->enemy), me = rc_disp_from_battle(&bs->player);
+        rc_tm_hud(tm, &foe, false);
+        rc_tm_hud(tm, &me, true);
+    }
+
+    if (gs->mode == GAME_MODE_BATTLE_SWITCH ||
+        (gs->mode == GAME_MODE_BATTLE && (env->battle_menu == RC_MENU_PARTY || (env->battle_menu == RC_MENU_ITEM && env->item_stage == 1)))) {
+
+        memset(f, 255, RC_FRAME_PIXELS);
+        for (int i = 0; i < gs->party_count && i < 6; i++) {
+            PartyMon m = rc_party_mon(gs, i);
+            int y = 6 + i * 22;
+            rc_box(f, 14, y, 30, y + 16, 85, 0);
+            rc_line(f, 36, y + 2, 40);
+            rc_hp_bar(f, 36, y + 9, 80, m.max_hp > 0 ? (float)m.box.hp / (float)m.max_hp : 0.0f);
+            if (i == env->cursor_party) rc_cursor(f, 4, y + 5);
+        }
+        if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM) {
+            // "Use item on which POKeMON?" -- the same list, with the question in the text box.
+            rc_dialogue_box(f, "Use item on which POKeMON?", false);
+        } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_PARTY && env->party_stage == 0) {
+            rc_dialogue_box(f, "Choose a POKeMON.", false);
+        }
+        if (env->party_stage == 1) {  // SWITCH / STATS / CANCEL box, as in the real party menu
+            rc_box(f, 88, 78, RC_FRAME_W, RC_FRAME_H, 255, 0);
+            static const char *const LABELS[3] = {"SWITCH", "STATS", "CANCEL"};
+            for (int i = 0; i < 3; i++) {
+                rc_text(f, 104, 86 + i * 16, LABELS[i], 0);
+                if (i == env->cursor_action) rc_glyph(f, 94, 86 + i * 16, '>', 0);
+            }
+        } else if (env->party_stage == 3) {
+            rc_dialogue_box(f, env->party_msg == 1 ? "That POKeMON is already out!" : "There's no will to fight!", true);
+        } else if (env->party_stage == 2) {  // stats page
+            memset(f, 255, RC_FRAME_PIXELS);
+            PartyMon m = rc_party_mon(gs, env->cursor_party < gs->party_count ? env->cursor_party : 0);
+            char line[40];
+            snprintf(line, sizeof(line), "HP %u/%u", m.box.hp, m.max_hp);
+            rc_text(f, 8, 8, line, 0);
+            snprintf(line, sizeof(line), "LV %u", m.level);
+            rc_text(f, 8, 22, line, 0);
+            snprintf(line, sizeof(line), "ATK %u  DEF %u", m.attack, m.defense);
+            rc_text(f, 8, 36, line, 0);
+            snprintf(line, sizeof(line), "SPD %u  SPC %u", m.speed, m.special);
+            rc_text(f, 8, 50, line, 0);
+        }
+        return;
+    }
+
+    if (safari) {
+        rc_box(f, 0, 104, RC_FRAME_W, RC_FRAME_H, 255, 0);
+        static const int W[4] = {26, 20, 16, 12};
+        rc_box(f, 72, 104, RC_FRAME_W, RC_FRAME_H, 255, 0);
+        for (int c = 0; c < 4; c++) {
+            int x = 88 + (c & 1) * 36, y = 114 + (c >> 1) * 14;
+            rc_line(f, x, y, W[c]);
+            if (c == env->cursor_main) rc_cursor(f, x - 8, y - 2);
+        }
+    } else if (env->battle_menu == RC_MENU_MAIN) {
+        // Empty message box on the left, FIGHT/PKMN/ITEM/RUN on the right.
+        rc_tm_box(tm, 0, 12, 19, 17);
+        rc_tm_put(tm, 8, 12, 0x79);
+        for (int y = 13; y <= 16; y++) rc_tm_put(tm, 8, y, 0x7C);
+        rc_tm_put(tm, 8, 17, 0x7D);
+        rc_tm_text(tm, 10, 14, "FIGHT");
+        rc_tm_put(tm, 16, 14, 0xE1);  // <PK><MN>
+        rc_tm_put(tm, 17, 14, 0xE2);
+        rc_tm_text(tm, 10, 16, "ITEM");
+        rc_tm_text(tm, 16, 16, "RUN");
+        static const int CX[4] = {9, 15, 9, 15}, CY[4] = {14, 14, 16, 16};
+        rc_tm_put(tm, CX[env->cursor_main & 3], CY[env->cursor_main & 3], 0xED);
+    } else if (env->battle_menu == RC_MENU_FIGHT) {
+        // Move list with the TYPE/PP box of the highlighted move above it.
+        rc_tm_box(tm, 4, 12, 19, 17);
+        rc_tm_box(tm, 0, 8, 10, 12);
+        for (int y = 13; y <= 16; y++) {
+            rc_tm_put(tm, 0, y, 0x7C);
+            for (int x = 1; x <= 3; x++) rc_tm_put(tm, x, y, RC_TM_SPACE);
+        }
+        rc_tm_put(tm, 0, 17, 0x7D);
+        for (int x = 1; x <= 3; x++) rc_tm_put(tm, x, 17, 0x7A);
+        int n = rc_move_count(gs);
+        for (int i = 0; i < 4; i++) {
+            uint8_t mv = i < n ? bs->player.moves[i] : 0;
+            rc_tm_text(tm, 6, 13 + i, mv ? rc_move_name(mv) : "-");
+        }
+        int cur = env->cursor_fight < n ? env->cursor_fight : 0;
+        rc_tm_put(tm, 5, 13 + cur, 0xED);
+        if (n > 0) {
+            uint8_t mv = bs->player.moves[cur];
+            unsigned base = MOVES[mv].pp, ups = gs->party[gs->active_party_slot].box.pp_up[cur] & 3;
+            rc_tm_text(tm, 1, 9, "TYPE/");
+            rc_tm_text(tm, 2, 10, rc_type_name(MOVES[mv].type));
+            char pp[8];
+            snprintf(pp, sizeof(pp), "%2u/%2u", bs->player.pp[cur] & 0x3F, base + ups * (base / 5));
+            rc_tm_text(tm, 5, 11, pp);
+        }
+    } else if (gs->mode == GAME_MODE_BATTLE && env->battle_menu == RC_MENU_ITEM && env->item_stage != 1) {
+        // The bag: a 3-row list ending in CANCEL, item name over its "x quantity" (still schematic
+        // box art, drawn over the real pics and HUD).
+        rc_draw_tilemap(f, tm);
+        tm_drawn = true;
+        rc_box(f, 0, 104, RC_FRAME_W, RC_FRAME_H, 255, 0);
+        rc_box(f, 32, 16, RC_FRAME_W, 104, 255, 0);
+        int entries = gs->bag.num_slots + 1;
+        for (int row = 0; row < 3; row++) {
+            int i = env->bag_scroll + row;
+            if (i >= entries) break;
+            int y = 26 + row * 24;
+            if (i == gs->bag.num_slots) {
+                rc_text(f, 52, y, "CANCEL", 0);
+            } else {
+                char name[24], qty[8];
+                rc_item_name(gs->bag.slots[i].item_id, name, sizeof(name));
+                snprintf(qty, sizeof(qty), "x%u", gs->bag.slots[i].count);
+                rc_text(f, 52, y, name, 0);
+                rc_text(f, 112, y + 10, qty, 0);
+            }
+            if (i == env->cursor_item) rc_glyph(f, 40, y, '>', 0);
+        }
+        if (env->bag_scroll > 0) rc_glyph(f, 148, 20, '^', 0);
+        if (env->bag_scroll + 3 < entries) rc_glyph(f, 148, 96, 'v', 0);
+        if (env->item_stage == 2) {
+            const char *msg = env->item_msg == RC_ITEM_MSG_NO_EFFECT ? "It won't have any effect."
+                              : env->item_msg == RC_ITEM_MSG_BOX_FULL ? "The POKeMON BOX is full! Can't use that item now!"
+                                                                       : "OAK: This isn't the time to use that!";
+            rc_dialogue_box(f, msg, true);
+        }
+    }
+    if (!tm_drawn) rc_draw_tilemap(f, tm);
+}
+
+// One frame of the battle text phase (see redcore_battle_text.h): the scene the frame's flags ask
+// for, with the HP/level the frame says and its two message lines.
+static void redcore_draw_text_frame(const RcEnv *env, uint8_t *f) {
+    const RcTextPhase *ph = &env->text;
+    const RcTextFrame *tf = &ph->f[ph->i < ph->n ? ph->i : (ph->n ? ph->n - 1 : 0)];
+    if (tf->flags & RCF_BLACK) {
+        memset(f, 0, RC_FRAME_PIXELS);
+        return;
+    }
+    if (tf->flags & RCF_OVERWORLD) {
+        redcore_draw_overworld(&env->gstate, f);
+        return;
+    }
+    memset(f, 255, RC_FRAME_PIXELS);
+    if (tf->flags & RCF_PIC_FOE) rc_draw_foe_pic(f, tf->foe.species);
+    if (tf->flags & RCF_PIC_ME) rc_draw_me_pic(f, tf->me.species);
+    if (tf->flags & RCF_PIC_TRAINER) rc_draw_trainer_pic(f);
+
+    RcTileMap tm;
+    rc_tm_clear(tm);
+    if (tf->flags & RCF_HUD_FOE) rc_tm_hud(tm, &tf->foe, false);
+    if (tf->flags & RCF_HUD_ME) rc_tm_hud(tm, &tf->me, true);
+    if (tf->flags & RCF_STATS) {
+        rc_tm_box(tm, 9, 2, 19, 11);
+        static const char *const NAMES[4] = {"ATTACK", "DEFENSE", "SPEED", "SPECIAL"};
+        for (int i = 0; i < 4; i++) {
+            rc_tm_text(tm, 11, 3 + i * 2, NAMES[i]);
+            rc_tm_number(tm, 15, 4 + i * 2, ph->stats[1 + i], 3, true);
+        }
+    }
+    if (tf->flags & RCF_BOX) {
+        rc_tm_box(tm, 0, 12, 19, 17);
+        rc_tm_text(tm, 1, 14, tf->l1);
+        rc_tm_text(tm, 1, 16, tf->l2);
+        if ((tf->flags & RCF_PROMPT) && (ph->ticks & 1) == 0) rc_tm_put(tm, 18, 16, 0xEE);  // blinking arrow
+    }
+    if (tf->flags & RCF_YESNO) {
+        rc_tm_box(tm, 14, 7, 19, 11);
+        rc_tm_text(tm, 16, 8, "YES");
+        rc_tm_text(tm, 16, 10, "NO");
+        rc_tm_put(tm, 15, 8 + 2 * (ph->yn_cursor & 1), 0xED);
+    }
+    rc_draw_tilemap(f, tm);
+}
+
+static void redcore_draw_battle(const RcEnv *env, uint8_t *f) {
+    if (env->cfg.real_battle_ui_enabled || env->cfg.battle_text_enabled) redcore_draw_battle_real(env, f);
+    else redcore_draw_battle_schematic(env, f);
 }
 
 static void redcore_draw_starter_select(const RcEnv *env, uint8_t *f) {
@@ -615,6 +978,10 @@ static void redcore_draw_naming(const GameState *gs, uint8_t *f) {
 
 static void redcore_render_frame(const RcEnv *env, uint8_t *f) {
     const GameState *gs = &env->gstate;
+    if (env->text.active) {
+        redcore_draw_text_frame(env, f);
+        return;
+    }
     switch (gs->mode) {
         case GAME_MODE_BATTLE:
         case GAME_MODE_BATTLE_SWITCH:

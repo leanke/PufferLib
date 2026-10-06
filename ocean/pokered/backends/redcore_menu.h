@@ -65,9 +65,117 @@ static void rc_bag_clamp(RcEnv *env) {
     if (env->cursor_item >= env->bag_scroll + RC_BAG_ROWS) env->bag_scroll = (uint8_t)(env->cursor_item - (RC_BAG_ROWS - 1));
 }
 
-static void rc_step_engine(RcEnv *env, Action a) { gamestate_step(&env->gstate, a); }
+namespace { void rc_snapshot_now(RcEnv *env, PkSnapshot *s); }
+
+// ---- Battle text phase driver (frames are built in redcore_battle_text.h) ---------------------
+static void rc_text_start(RcEnv *env, const PkSnapshot *held) {
+    RcTextPhase *ph = &env->text;
+    if (ph->n == 0) return;
+    ph->active = true;
+    ph->i = 0;
+    ph->ticks = 0;
+    ph->yn_cursor = 0;
+    ph->held = *held;
+}
+
+static void rc_text_finish(RcEnv *env) {
+    env->text.active = false;
+    if (env->gstate.mode == GAME_MODE_BATTLE) env->battle_menu = env->text_return_menu;
+    env->text_return_menu = RC_MENU_MAIN;
+}
+
+// Frames that wait (the blinking arrow, YES/NO) take A or B; every other frame passes on its own.
+static void rc_text_input(RcEnv *env, int button) {
+    RcTextPhase *ph = &env->text;
+    const RcTextFrame *f = &ph->f[ph->i];
+    bool advance = true;
+    if (f->flags & RCF_YESNO) {
+        if (button == PKRED_ACTION_UP) ph->yn_cursor = 0;
+        else if (button == PKRED_ACTION_DOWN) ph->yn_cursor = 1;
+        advance = button == PKRED_ACTION_A || button == PKRED_ACTION_B;
+    } else if (f->flags & RCF_PROMPT) {
+        advance = button == PKRED_ACTION_A || button == PKRED_ACTION_B;
+    }
+    if (!advance) {
+        ph->ticks++;
+        return;
+    }
+    ph->ticks = 0;
+    if (++ph->i >= ph->n) rc_text_finish(env);
+}
+
+static void rc_step_engine(RcEnv *env, Action a) {
+    GameState *gs = &env->gstate;
+    bool narrate = env->cfg.battle_text_enabled &&
+                   (gs->mode == GAME_MODE_BATTLE || gs->mode == GAME_MODE_BATTLE_SWITCH);
+    if (!narrate) {
+        gamestate_step(gs, a);
+        return;
+    }
+    RcTurnPre pre;
+    rc_pre_capture(&pre, gs, a);
+    pre.no_moves_left = env->struggle_turn != 0;
+    rc_snapshot_now(env, &pre.held);
+    gamestate_step(gs, a);
+
+    bool turn_passed = memcmp(&pre.bs.rng, &gs->battle.rng, sizeof(pre.bs.rng)) != 0 ||
+                       pre.mode != gs->mode || gs->battle.outcome != BATTLE_ONGOING;
+    // RUN against a trainer takes no turn but still gets its message.
+    bool refused_run = a.run && pre.bs.is_trainer_battle;
+    if (!turn_passed && !refused_run) return;
+
+    RcTextPhase *ph = &env->text;
+    ph->n = 0;
+    RcTextBuilder tb;
+    tb.ph = ph;
+    tb.me = rc_disp_from_battle(&pre.bs.player);
+    tb.foe = rc_disp_from_battle(&pre.bs.enemy);
+    tb.base = RCF_PIC_FOE | RCF_PIC_ME | RCF_HUD_FOE | RCF_HUD_ME;
+    rc_narrate_turn(&tb, &pre, gs, a);
+    rc_text_start(env, &pre.held);
+}
 static bool rc_party_input(RcEnv *env, int button, bool forced);
 static void rc_item_input(RcEnv *env, int button);
+
+// A one-box battle message over the scene (no engine step); `return_menu` is what shows afterwards.
+static void rc_battle_message(RcEnv *env, const char *l1, const char *l2, uint8_t return_menu) {
+    GameState *gs = &env->gstate;
+    RcTextPhase *ph = &env->text;
+    ph->n = 0;
+    RcTextBuilder tb;
+    tb.ph = ph;
+    tb.me = rc_disp_from_battle(&gs->battle.player);
+    tb.foe = rc_disp_from_battle(&gs->battle.enemy);
+    tb.base = RCF_PIC_FOE | RCF_PIC_ME | RCF_HUD_FOE | RCF_HUD_ME;
+    tb_box(&tb, l1, l2);
+    PkSnapshot held;
+    rc_snapshot_now(env, &held);
+    rc_text_start(env, &held);
+    env->text_return_menu = return_menu;
+}
+
+static bool rc_any_pp_left(const BattleMon *b) {
+    for (int i = 0; i < REDCORE_NUM_MOVES; i++)
+        if (b->moves[i] != 0 && b->pp[i] > 0) return true;
+    return false;
+}
+
+// Every move is out of PP: the game says so and uses Struggle. The engine only plays move slots, so
+// Struggle is lent slot 0 for the turn and the real move and its (empty) PP are put back afterwards.
+static void rc_struggle_turn(RcEnv *env) {
+    BattleMon *p = &env->gstate.battle.player;
+    uint8_t move0 = p->moves[0], pp0 = p->pp[0];
+    p->moves[0] = STRUGGLE;
+    p->pp[0] = 1;
+    Action a;
+    memset(&a, 0, sizeof(a));
+    a.move_slot = 0;
+    env->struggle_turn = 1;
+    rc_step_engine(env, a);
+    env->struggle_turn = 0;
+    p->moves[0] = move0;
+    p->pp[0] = pp0;
+}
 
 static void rc_battle_button(RcEnv *env, int button) {
     GameState *gs = &env->gstate;
@@ -77,7 +185,10 @@ static void rc_battle_button(RcEnv *env, int button) {
     switch (env->battle_menu) {
         case RC_MENU_MAIN:
             if (button == PKRED_ACTION_A) {
-                if (env->cursor_main == 0) {
+                if (env->cursor_main == 0 && !rc_any_pp_left(&gs->battle.player)) {
+                    rc_struggle_turn(env);
+                    env->battle_menu = RC_MENU_MAIN;
+                } else if (env->cursor_main == 0) {
                     env->battle_menu = RC_MENU_FIGHT;
                     int n = rc_move_count(gs);
                     env->cursor_fight = env->last_move_slot < n ? env->last_move_slot : 0;  // starts on the last used move
@@ -105,7 +216,9 @@ static void rc_battle_button(RcEnv *env, int button) {
                 env->battle_menu = RC_MENU_MAIN;
             } else if (button == PKRED_ACTION_A) {
                 uint8_t slot = env->cursor_fight;
-                if (slot < n && gs->battle.player.moves[slot] != 0) {
+                if (slot < n && gs->battle.player.moves[slot] != 0 && gs->battle.player.pp[slot] == 0) {
+                    rc_battle_message(env, "No PP left for", "this move!", RC_MENU_FIGHT);  // refused, no turn
+                } else if (slot < n && gs->battle.player.moves[slot] != 0) {
                     env->player_selected_move = gs->battle.player.moves[slot];
                     env->last_move_slot = slot;
                     a.move_slot = slot;
@@ -358,6 +471,15 @@ static void redcore_menu_after_step(RcEnv *env) {
         if (env->prev_mode != GAME_MODE_BATTLE_SWITCH) {  // a new battle (InitBattleVariables)
             env->player_selected_move = 0;
             env->cursor_party_saved = 0;
+            if (env->cfg.battle_text_enabled && gs->mode == GAME_MODE_BATTLE) {
+                RcTextBuilder tb;
+                tb.ph = &env->text;
+                tb.ph->n = 0;
+                rc_narrate_intro(&tb, gs);
+                PkSnapshot held;
+                rc_snapshot_now(env, &held);
+                rc_text_start(env, &held);
+            }
         }
     } else if (gs->mode == GAME_MODE_BATTLE_SWITCH) {
         env->party_stage = 0;

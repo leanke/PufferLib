@@ -313,14 +313,28 @@ elif [ "$ENV" = "pokered" ]; then
         NATIVE_BUILD="$(pwd)/$NATIVE_DIR/build_native"
         echo "Building libnative_core.a ..."
         cmake -S ocean/pokered/backends/native -B "$NATIVE_BUILD" -DNATIVE_ROOT="$(pwd)/$NATIVE_DIR" \
+            -DNATIVE_MARCH=$([ "${NATIVE_MARCH:-1}" = "1" ] && echo ON || echo OFF) \
             -DCMAKE_BUILD_TYPE=Release >/dev/null
         cmake --build "$NATIVE_BUILD" --target native_core -j"$(nproc)"
         NATIVE_OBJ="$NATIVE_BUILD/pokered_native_backend.o"
-        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec \
+        # LTO + -march=native match backends/native/CMakeLists.txt (-DNATIVE_MARCH=OFF there and
+        # NATIVE_MARCH=0 here for a portable binary).
+        NATIVE_CC_FLAGS=(-flto=auto)
+        [ "${NATIVE_MARCH:-1}" = "1" ] && NATIVE_CC_FLAGS+=(-march=native)
+        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -ffat-lto-objects \
             -I./src -I./vendor -I./ocean/pokered \
             -I./$NATIVE_DIR/include -I./$NATIVE_DIR/data \
             -c ocean/pokered/backends/native.c -o "$NATIVE_OBJ"
-        LINK_ARCHIVES+=("$NATIVE_OBJ" "$NATIVE_BUILD/libnative_core.a")
+        # Link-time optimization: gcc -flto -r bundles the glue and every archive member into one
+        # object of LTO bytecode (no machine code yet). The final link's linker plugin then
+        # optimizes it across the whole engine, and (unlike -flto on the nvcc link itself) leaves
+        # the CUDA host objects alone, which would fail there (duplicate fatbinData symbols).
+        # gcc warns that the final link's LTRANS runs serially; that is expected.
+        NATIVE_LTO_OBJ="$NATIVE_BUILD/pokered_native_lto.o"
+        ${CC:-gcc} -std=gnu11 -O2 -ftls-model=initial-exec "${NATIVE_CC_FLAGS[@]}" -flto="$(nproc)" -r -nostdlib \
+            "$NATIVE_OBJ" -Wl,--whole-archive "$NATIVE_BUILD/libnative_core.a" -Wl,--no-whole-archive \
+            -o "$NATIVE_LTO_OBJ"
+        LINK_ARCHIVES+=("$NATIVE_LTO_OBJ")
     fi
     EXTRA_CFLAGS+=(-D__LIBRETRO__ -DHAVE_CSTDINT)
     # OpenSSL: TLS client used by pokered_stream.h.

@@ -135,22 +135,27 @@ static void add_log(Env *env) {
     const PkSnapshot *s = &env->cur;
     Log *log = &env->log;
 
-    log->episode_length = env->step_count;
-    log->episode_return = env->score;
-    log->reward = env->totals;
-    log->level_sum = party_level_sum(s);
+    // The vecenv sums every Log field across envs and divides by n, so each episode adds
+    // to the log (an env can finish several between flushes) instead of overwriting it.
+    log->episode_length += env->step_count;
+    log->episode_return += env->score;
+    const float *totals = (const float *)&env->totals;
+    float *reward = (float *)&log->reward;
+    for (size_t i = 0; i < sizeof(RewardTotals) / sizeof(float); i++)
+        reward[i] += totals[i];
+    log->level_sum += party_level_sum(s);
     for (int i = 0; i < PARTY_SIZE; i++)
-        log->pkmn_lvl[i] = s->party[i].level;
-    log->party_count = s->party_count;
-    log->badges = s->badges;
-    log->event_sum = completed_event_count(s);
-    log->unique_coords = env->unique_coords_count;
-    log->map_exhaustion =
+        log->pkmn_lvl[i] += s->party[i].level;
+    log->party_count += s->party_count;
+    log->badges += s->badges;
+    log->event_sum += completed_event_count(s);
+    log->unique_coords += env->unique_coords_count;
+    log->map_exhaustion +=
         fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
-    log->pokedex_owned = s->pokedex_owned_count;
-    log->pokedex_seen = s->pokedex_seen_count;
-    log->milestone_pool_size = env->be->milestone_pool_size ? (float)env->be->milestone_pool_size() : 0.0f;
-    log->reset_from_milestone = env->reset_from_milestone ? 1.0f : 0.0f;
+    log->pokedex_owned += s->pokedex_owned_count;
+    log->pokedex_seen += s->pokedex_seen_count;
+    log->milestone_pool_size += env->be->milestone_pool_size ? (float)env->be->milestone_pool_size() : 0.0f;
+    log->reset_from_milestone += env->reset_from_milestone ? 1.0f : 0.0f;
     log->n++;
 }
 
@@ -226,6 +231,8 @@ static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
     bc->nickname_prompt_enabled = kw_bool(kw, "nickname_prompt_enabled");
     bc->npc_text_enabled = kw_bool(kw, "npc_text_enabled");
     bc->npc_movement_enabled = kw_bool(kw, "npc_movement_enabled");
+    bc->real_battle_ui_enabled = kw_bool(kw, "real_battle_ui_enabled");
+    bc->battle_text_enabled = kw_bool(kw, "battle_text_enabled");
 
     bc->milestone_sample_prob = kw_float(kw, "milestone_sample_prob");
     bc->milestones_enabled = kw_bool(kw, "milestones_enabled");

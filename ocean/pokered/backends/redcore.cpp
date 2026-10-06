@@ -20,8 +20,10 @@ extern "C" {
 #include "pokemon_data.h"
 #include "stats.h"
 #include "tilesets.h"
+#include "type_chart.h"
 }
 #include "redcore_events.h"
+#include "redcore_battle_text.h"
 
 #define REDCORE_POKEDEX_SLOTS 256
 #define REDCORE_DEX_BYTES (REDCORE_POKEDEX_SLOTS / 8)
@@ -60,6 +62,9 @@ struct RcEnv {
     uint8_t cursor_action;   // cursor in the SWITCH/STATS/CANCEL box
     uint8_t player_selected_move;
     GameMode prev_mode;
+    uint8_t text_return_menu; // RC_MENU_* to show when a message phase ends (default main)
+    uint8_t struggle_turn;   // this turn is a forced Struggle (every move is out of PP)
+    RcTextPhase text;        // battle message phase, see redcore_battle_text.h (cfg.battle_text_enabled)
 
     uint8_t frame[160 * 144];
 };
@@ -315,6 +320,9 @@ void rc_reset(void *impl, bool full_reset, unsigned *rng, bool *from_milestone) 
     env->last_move_slot = env->cursor_party_saved = env->party_stage = env->cursor_action = env->party_msg = 0;
     env->bag_scroll = env->item_stage = env->item_pending = env->item_msg = 0;
     env->player_selected_move = 0;
+    env->text.active = false;
+    env->text_return_menu = RC_MENU_MAIN;
+    env->struggle_turn = 0;
     env->prev_mode = env->gstate.mode;
 }
 
@@ -330,13 +338,16 @@ void rc_cancel_wild_battle(RcEnv *env) {
 void rc_step(void *impl, int action, const PkSnapshot *) {
     RcEnv *env = (RcEnv *)impl;
     env->prev_mode = env->gstate.mode;
+    if (env->text.active) {  // a battle message phase: the engine is idle until the frames run out
+        rc_text_input(env, action);
+        return;
+    }
     redcore_apply_button(env, action);
     rc_cancel_wild_battle(env);
     redcore_menu_after_step(env);
 }
 
-void rc_snapshot(void *impl, PkSnapshot *s) {
-    RcEnv *env = (RcEnv *)impl;
+void rc_snapshot_now(RcEnv *env, PkSnapshot *s) {
     const GameState *gs = &env->gstate;
     memset(s, 0, sizeof(*s));
 
@@ -375,6 +386,32 @@ void rc_snapshot(void *impl, PkSnapshot *s) {
 
     for (int i = 0; i < pk_event_count(); i++)
         s->events[i] = env->event_bit[i] >= 0 && event_flag_get(&gs->flags, env->event_bit[i]) ? 1 : 0;
+}
+
+// While a battle text phase runs the engine is already past the event, so the policy keeps seeing
+// the snapshot from before it; only the battle mons' HP/level follow what the frame displays.
+void rc_snapshot(void *impl, PkSnapshot *s) {
+    RcEnv *env = (RcEnv *)impl;
+    if (!env->text.active) {
+        rc_snapshot_now(env, s);
+        return;
+    }
+    const RcTextPhase *ph = &env->text;
+    const RcTextFrame *tf = &ph->f[ph->i < ph->n ? ph->i : (ph->n ? ph->n - 1 : 0)];
+    *s = ph->held;
+    s->in_battle = ph->held.in_battle ? ph->held.in_battle : (env->gstate.battle.is_trainer_battle ? 2 : 1);
+    if (tf->me.max_hp) {
+        s->battle_mon.species = tf->me.species;
+        s->battle_mon.level = tf->me.level;
+        s->battle_mon.hp = (uint16_t)tf->me.hp;
+        s->battle_mon.max_hp = tf->me.max_hp;
+    }
+    if (tf->foe.max_hp) {
+        s->enemy_mon.species = tf->foe.species;
+        s->enemy_mon.level = tf->foe.level;
+        s->enemy_mon.hp = (uint16_t)tf->foe.hp;
+        s->enemy_mon.max_hp = tf->foe.max_hp;
+    }
 }
 
 void rc_screen(void *impl, float *obs) {

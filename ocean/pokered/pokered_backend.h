@@ -75,6 +75,8 @@ typedef struct {
 
     bool nickname_prompt_enabled;
     bool npc_text_enabled;
+    bool real_battle_ui_enabled;
+    bool battle_text_enabled;
     bool npc_movement_enabled;
     bool verbose;
     unsigned env_id;
