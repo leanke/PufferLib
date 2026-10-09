@@ -83,25 +83,27 @@ static float signal_fleeing(Env *env) {
 }
 
 static float signal_events(Env *env) {
+  const uint8_t *cur = env->cur.event_flags;
+  if (!memcmp(cur, env->prev_events, PK_EVENT_FLAG_BYTES))
+    return 0.0f;
   int fresh = 0;
-  for (int i = 0; i < EVENT_COUNT; i++) {
-    uint8_t done = env->cur.events[i];
-    if (done && !env->prev_events[i]) {
-      fresh++;
+  for (int b = 0; b < PK_EVENT_FLAG_BYTES; b++) {
+    uint8_t rose = cur[b] & (uint8_t)~env->prev_events[b] & g_pk_events.mask[b];
+    if (rose) {
+      uint8_t pay = env->event_reward_once ? rose & (uint8_t)~env->paid_events[b] : rose;
+      fresh += __builtin_popcount(pay);
       if (env->verbose)
-        printf("Event completed: %s\n", EVENT_LIST[i].name);
+        for (int k = 0; k < 8; k++)
+          if (pay & (1u << k))
+            printf("Event completed: %s\n", EVENT_LIST[g_pk_events.event_at[b * 8 + k]].name);
+      env->paid_events[b] |= rose;
     }
-    env->prev_events[i] = done;
+    env->prev_events[b] = cur[b];
   }
   return (float)fresh;
 }
 
-static int completed_event_count(const PkSnapshot *s) {
-  int n = 0;
-  for (int i = 0; i < EVENT_COUNT; i++)
-    n += s->events[i] != 0;
-  return n;
-}
+static int completed_event_count(const PkSnapshot *s) { return pk_completed_events(s->event_flags); }
 
 static bool in_pokecenter(uint8_t map_n) {
   for (int i = 0; i < PKRED_POKECENTER_MAPS; i++)
@@ -110,35 +112,32 @@ static bool in_pokecenter(uint8_t map_n) {
   return false;
 }
 
-static int empty_move_count(const PkMon *m) {
-  int empty = 0;
-  for (int k = 0; k < 4; k++)
-    empty += m->moves[k] && !(m->pp[k] & PKRED_PP_MASK);
-  return empty;
+static int move_max_pp(uint8_t move, uint8_t pp) {
+  if (move == 0 || move > PKRED_NUM_MOVES)
+    return 0;
+  int base = PKRED_MOVE_BASE_PP[move];
+  int bonus = base / 5 < 7 ? base / 5 : 7;
+  return base + (pp >> 6) * bonus;
 }
 
-static bool mon_needs_heal(const PkMon *m) {
-  return m->max_hp > 0 && (m->hp == 0 || empty_move_count(m) >= 2);
-}
-
-static bool party_needs_heal(const PkSnapshot *s) {
+static float party_pp_left(const PkSnapshot *s) {
+  int pp = 0, max = 0;
   for (int i = 0; i < s->party_count; i++)
-    if (mon_needs_heal(&s->party[i]))
-      return true;
-  return false;
+    for (int k = 0; k < 4; k++) {
+      int m = move_max_pp(s->party[i].moves[k], s->party[i].pp[k]);
+      if (m) {
+        pp += s->party[i].pp[k] & PKRED_PP_MASK;
+        max += m;
+      }
+    }
+  return max ? (float)pp / (float)max : 1.0f;
 }
 
-static bool party_restored(const PkSnapshot *cur, const PkSnapshot *prev) {
-  for (int i = 0; i < cur->party_count; i++) {
-    if (cur->party[i].hp != cur->party[i].max_hp)
-      return false;
-    for (int k = 0; k < 4; k++)
-      if (prev->party[i].moves[k] && !(prev->party[i].pp[k] & PKRED_PP_MASK) &&
-          !(cur->party[i].pp[k] & PKRED_PP_MASK))
-        return false;
-  }
-  return true;
+static bool party_needs_heal(const Env *env, const PkSnapshot *s) {
+  return s->hp_fraction < env->healing_health_left || party_pp_left(s) < env->healing_pp_left;
 }
+
+static bool party_restored(const PkSnapshot *s) { return s->hp_fraction >= 1.0f && party_pp_left(s) >= 1.0f; }
 
 static float signal_healing(Env *env) {
   const PkSnapshot *cur = &env->cur, *prev = &env->prev;
@@ -146,7 +145,7 @@ static float signal_healing(Env *env) {
     return 0.0f;
   if (cur->map_n != prev->map_n || !in_pokecenter(cur->map_n))
     return 0.0f;
-  if (!party_needs_heal(prev) || !party_restored(cur, prev))
+  if (!party_needs_heal(env, prev) || !party_restored(cur))
     return 0.0f;
   if (env->verbose)
     printf("Healed the party at a Pokecenter\n");
@@ -220,40 +219,30 @@ static float signal_hm_used(Env *env) {
   return (float)__builtin_popcount(used);
 }
 
+static float signal_none(Env *env) {
+  (void)env;
+  return 0.0f;
+}
+
 static float calculate_rewards(Env *env) {
-  env->be->snapshot(env->impl, &env->cur);
-  if (pkms_active(env))
-    pkms_check(env);
-
-  float w_explore = env->weight_exploration;
-  if (env->exploration_death_scaling_enabled)
-    w_explore /= (float)(env->blackout_count + 1);
-
-  float explore = w_explore * signal_exploration(env);
-  float catching = env->weight_catching * signal_catching(env);
-  float seeing = env->weight_seeing * signal_seeing(env);
-  float leveling = env->weight_leveling * signal_leveling(env);
-  float events = env->weight_events * signal_events(env);
-  float battling = env->weight_battling * signal_battling(env);
-  float fleeing = env->weight_fleeing * signal_fleeing(env);
-
-  float healing = env->weight_healing * signal_healing(env);
-  float hm_taught = env->weight_hm_taught * signal_hm_taught(env);
-  float hm_used = env->weight_hm_used * signal_hm_used(env);
-
-  env->totals.healing += healing;
-  env->totals.hm_taught += hm_taught;
-  env->totals.hm_used += hm_used;
-  env->totals.explore += explore;
-  env->totals.catching += catching;
-  env->totals.seeing += seeing;
-  env->totals.leveling += leveling;
-  env->totals.events += events;
-  env->totals.battling += battling;
-  env->totals.fleeing += fleeing;
+  float gained = 0.0f, lost = 0.0f;
+#define PK_SIG_EVAL(name, fn, key, penalty, summed)                               \
+  if (summed) {                                                                   \
+    float w = env->weight[PK_SIG_##name];                                         \
+    if (PK_SIG_##name == PK_SIG_explore && env->exploration_death_scaling_enabled) \
+      w /= (float)(env->episode.blackouts + 1);                                   \
+    float v = w * fn(env);                                                        \
+    env->totals.name += v;                                                        \
+    if (penalty)                                                                  \
+      lost += v;                                                                  \
+    else                                                                          \
+      gained += v;                                                                \
+  }
+  PK_REWARD_SIGNALS(PK_SIG_EVAL)
+#undef PK_SIG_EVAL
 
   env->prev = env->cur;
-  return explore + catching + seeing + leveling + events + battling + healing + hm_taught + hm_used - fleeing;
+  return gained + lost;
 }
 
 #endif

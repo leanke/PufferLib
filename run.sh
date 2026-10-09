@@ -1,30 +1,7 @@
 #!/usr/bin/env bash
 
-export CUDA_VISIBLE_DEVICES=0
-export NVCC_ARCH=sm_86
-
-NCCL_LIB=$(python -c 'import nvidia.nccl, os; print(os.path.join(nvidia.nccl.__path__[0], "lib"))')
-export LD_LIBRARY_PATH="$NCCL_LIB:${LD_LIBRARY_PATH:-}"
-
-prompt_mode() {
-    local choice
-    echo "Select a run mode:" >&2
-    echo "  1) ./puffer train" >&2
-    echo "  2) ./puffer eval" >&2
-    echo "  3) ./pokered" >&2
-    echo "  4) ./build.sh" >&2
-    read -r -p "Enter 1-4: " choice
-    case "$choice" in
-        1) echo "train" ;;
-        2) echo "eval" ;;
-        3) echo "pokered" ;;
-        4) echo "build" ;;
-        *)
-            echo "invalid choice: $choice" >&2
-            exit 1
-            ;;
-    esac
-}
+cd "$(dirname "$0")" || exit 1
+source scripts/puffer_env.sh
 
 prompt_env() {
     local answer
@@ -52,6 +29,15 @@ prompt_backend() {
     esac
 }
 
+prompt_tier() {
+    local answer
+    read -r -p "suite tier [quick/full/all, blank = quick]: " answer >&2
+    case "$answer" in
+        full|all) echo "$answer" ;;
+        *) echo "quick" ;;
+    esac
+}
+
 prompt_total_agents() {
     local answer
     read -r -p "vec.total_agents [leave blank for default]: " answer
@@ -62,7 +48,7 @@ run() {
     local mode="$1"
     shift
     if [ -z "$mode" ]; then
-        mode="$(prompt_mode)"
+        exec ./menu.sh
     fi
     case "$mode" in
         train)
@@ -84,7 +70,7 @@ run() {
             ;;
         pokered)
             local verbose
-            ./build.sh pokered
+            ./build.sh pokered --cpu || exit 1
             verbose="$(prompt_bool "env.verbose" "True")"
             exec ./pokered "--env.verbose=$verbose" "--env.max_episode_length=0" "$@"
             ;;
@@ -102,8 +88,25 @@ run() {
             fi
             exec ./build.sh "$env" "$@"
             ;;
+        test)
+            # Pokered test suite (ocean/pokered/tests/run_all.sh suite). The tests link the vendor
+            # libraries any pokered build produces, so build once if they are missing.
+            local suite=ocean/pokered/tests/run_all.sh
+            if [ ! -x "$suite" ]; then
+                echo "$suite not found (ocean/pokered/tests/ is untracked)" >&2
+                exit 1
+            fi
+            if [ ! -f vendor/gambatte-libretro/install/lib/libgambatte.a ] ||
+               [ ! -f vendor/pokered-native/build_native/libnative_core.a ]; then
+                ./build.sh pokered || exit 1
+            fi
+            if [ $# -eq 0 ] && [ -t 0 ]; then
+                set -- "$(prompt_tier)"
+            fi
+            exec "$suite" suite "$@"
+            ;;
         *)
-            echo "usage: $0 [train|eval|pokered|build] [section.key=value ...]" >&2
+            echo "usage: $0 [train|eval|pokered|build|test] [section.key=value ...]" >&2
             exit 1
             ;;
     esac

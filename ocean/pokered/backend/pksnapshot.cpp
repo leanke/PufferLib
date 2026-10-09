@@ -6,8 +6,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "../gambatte/gambatte_wrapper.h"
-#include "../pkstate.h"
+#include "gambatte/gambatte_wrapper.h"
+#include "pksnapshot.h"
 
 namespace {
 

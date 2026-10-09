@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../includes/events.h"
-#include "../includes/ram_map.h"
-#include "../pkstate.h"
+#include "../data/events.h"
+#include "../data/ram_map.h"
+#include "../backend/pksnapshot.h"
 
 static void summarize(const PkState *s) {
     int events = 0;

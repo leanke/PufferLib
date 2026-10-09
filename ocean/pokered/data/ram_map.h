@@ -2,6 +2,7 @@
 #define POKERED_RAM_MAP_H
 
 #include <stdint.h>
+#  include <assert.h>
 
 #define PKRED_BE16(hi, lo) ((uint16_t)(((uint16_t)(hi) << 8) | (uint8_t)(lo)))
 
@@ -44,7 +45,6 @@ typedef struct PKRED_PACKED {
 #endif
 
 #if __STDC_VERSION__ >= 201112L
-#  include <assert.h>
    static_assert(sizeof(PkredPartyMon) == 0x2C, "PkredPartyMon size mismatch");
 #endif
 
@@ -71,7 +71,25 @@ typedef struct PKRED_PACKED {
 #define PKRED_ADDR_ENEMY_MON_STATUS     0xCFE9u
 #define PKRED_ADDR_ENEMY_MON_LEVEL      0xCFF3u
 #define PKRED_ADDR_ENEMY_MON_MAX_HP     0xCFF4u
-#define PKRED_ADDR_ESCAPED_FROM_BATTLE  0xD078u
+#define PKRED_ADDR_EVENT_FLAGS       0xD747u
+#define PKRED_ADDR_TILE_MAP          0xC3A0u
+#define PKRED_TILE_BLANK             0x7Fu
+#define PKRED_ADDR_SPRITE_STATE_DATA1 0xC100u
+#define PKRED_SPRITE_STATE_STRIDE    16u
+#define PKRED_SPRITE_PICTURE_ID      0u
+#define PKRED_SPRITE_IMAGE_INDEX     2u
+#define PKRED_SPRITE_Y_PIXELS        4u
+#define PKRED_SPRITE_X_PIXELS        6u
+#define PKRED_SPRITE_HIDDEN          0xFFu
+#define PKRED_ADDR_OPTIONS           0xD355u
+#define PKRED_OPTIONS_TEXT_DELAY_MASK 0x3Fu
+#define PKRED_OPTIONS_BATTLE_SHIFT_BIT 6
+#define PKRED_OPTIONS_BATTLE_ANIMATION_BIT 7
+#define PKRED_ADDR_H_RANDOM_ADD      0xFFD3u
+#define PKRED_ADDR_H_RANDOM_SUB      0xFFD4u
+#define PKRED_ADDR_BATTLE_RESULT     0xCF0Bu
+#define PKRED_BATTLE_RESULT_RAN      2u
+#define PKRED_ADDR_BOX_COUNT         0xDA80u
 #define PKRED_ADDR_PLAYER_SELECTED_MOVE 0xCCDCu
 
 #define PKRED_ADDR_BATTLE_MON_TYPE1 0xD019u
@@ -223,5 +241,28 @@ static inline uint32_t pkred_hash_bytes(const uint8_t *p, int n) {
 #define PKRED_ADDR_MISSABLE_OBJECT_FLAGS        0xD5A6u
 #define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_1      0x22u
 #define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_2      0x23u
+
+#ifndef PKRED_MOVE_PP_H
+#define PKRED_MOVE_PP_H
+
+#include <stdint.h>
+
+#define PKRED_NUM_MOVES 165
+
+static const uint8_t PKRED_MOVE_BASE_PP[PKRED_NUM_MOVES + 1] = {
+    0, 35, 25, 10, 15, 20, 20, 15, 15, 15, 35, 30, 5, 10, 30, 30,
+    35, 35, 20, 15, 20, 20, 10, 20, 30, 5, 25, 15, 15, 15, 25, 20,
+    5, 35, 15, 20, 20, 20, 15, 30, 35, 20, 20, 30, 25, 40, 20, 15,
+    20, 20, 20, 30, 25, 15, 30, 25, 5, 15, 10, 5, 20, 20, 20, 5,
+    35, 20, 25, 20, 20, 20, 15, 20, 10, 10, 40, 25, 10, 35, 30, 15,
+    20, 40, 10, 15, 30, 15, 20, 10, 15, 10, 5, 10, 10, 25, 10, 20,
+    40, 30, 30, 20, 20, 15, 10, 40, 15, 20, 30, 20, 20, 10, 40, 40,
+    30, 30, 30, 20, 30, 10, 10, 20, 5, 10, 30, 20, 20, 20, 5, 15,
+    10, 20, 15, 15, 35, 20, 15, 10, 20, 30, 15, 40, 20, 15, 10, 5,
+    10, 30, 10, 15, 20, 15, 40, 40, 10, 5, 15, 10, 10, 10, 15, 30,
+    30, 10, 10, 20, 10, 10,
+};
+
+#endif
 
 #endif

@@ -877,6 +877,17 @@ static void pufferl_forward_step(PuffeRL* pufferl, int buf, int t,
     }
 }
 
+// Launch errors are often sticky from an earlier async fault; print both.
+static void graph_launch_checked(cudaGraphExec_t g, cudaStream_t stream, int idx) {
+    cudaError_t pending = cudaPeekAtLastError();
+    cudaError_t e = cudaGraphLaunch(g, stream);
+    if (e != cudaSuccess) {
+        fprintf(stderr, "cudaGraphLaunch failed: graph=%d launch=%s pending=%s\n",
+            idx, cudaGetErrorString(e), cudaGetErrorString(pending));
+        abort();
+    }
+}
+
 void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     Hypers* hypers = &pufferl->hypers;
     // GPU rollout graphs the whole horizon; CPU still graphs one net step.
@@ -886,9 +897,7 @@ void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     profile_begin("fused_rollout", hypers->profile);
 
     if (step_graph && pufferl->rollout_graphs[graph] != NULL) {
-        assert(cudaGraphLaunch(
-            pufferl->rollout_graphs[graph], stream) == cudaSuccess
-            && "cudaGraphLaunch failed");
+        graph_launch_checked(pufferl->rollout_graphs[graph], stream, graph);
         profile_end(hypers->profile);
         return;
     }
@@ -906,8 +915,7 @@ void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         assert(cudaGraphInstantiate(&pufferl->rollout_graphs[graph], _graph, 0)
                 == cudaSuccess && "cudaGraphInstantiate failed");
         cudaGraphDestroy(_graph);
-        assert(cudaGraphLaunch(pufferl->rollout_graphs[graph], stream) == cudaSuccess
-                && "cudaGraphLaunch failed");
+        graph_launch_checked(pufferl->rollout_graphs[graph], stream, graph);
     }
     profile_end(hypers->profile);
 }

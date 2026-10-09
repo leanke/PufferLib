@@ -8,21 +8,14 @@
 #include "pokered/rl.h"
 #include "pokered/snapshot.h"
 
-#include "../includes/ram_map.h"
-#include "../includes/events.h"
-#include "../pokered_layout.h"
-#include "../pokered_backend.h"
-#include "../pkstate.h"
-#include "ram_scenario.h"
-#include "step_events.h"
+#include "../../data/ram_map.h"
+#include "../backend.h"
+#include "../pksnapshot.h"
 
 _Static_assert(PK_FRAME_W == POKERED_SCREEN_WIDTH && PK_FRAME_H == POKERED_SCREEN_HEIGHT,
-              "pokered_layout.h screen geometry out of sync with pokered-native");
+              "backend.h screen geometry out of sync with pokered-native");
 _Static_assert(PK_STATE_WRAM_SIZE == WRAM_SIZE && PK_STATE_HRAM_SIZE == HRAM_SIZE,
-              "pkstate.h out of sync with pokered-native's WRAM/HRAM");
-_Static_assert(sizeof(EVENT_LIST) / sizeof(EVENT_LIST[0]) <= PK_MAX_EVENTS, "PkSnapshot.events too small");
-
-#define POKEDEX_BYTES ((PKRED_POKEDEX_NUM_POKEMON + 7) / 8)
+              "pksnapshot.h out of sync with pokered-native's WRAM/HRAM");
 
 typedef struct NativeBackend {
     PokeredEnv *env;
@@ -37,35 +30,17 @@ typedef struct NativeBackend {
     bool decision_mode, auto_text;
     unsigned decision_max_frames;
     uint32_t shade_rgb[4];
-    PkEventTracker events;
 } NativeBackend;
 
-static int popcount_bytes(const uint8_t *b, int size) {
-    int count = 0;
-    for (int i = 0; i < size; i++)
-        count += __builtin_popcount(b[i]);
-    return count;
+static uint8_t mem_u8(void *ctx, uint16_t addr) { (void)ctx; return mem_read(addr); }
+static uint16_t mem_u16(void *ctx, uint16_t addr) { (void)ctx; return mem_read16_be(addr); }
+static const uint8_t *mem_span(void *ctx, uint16_t addr, unsigned len) {
+    (void)ctx;
+    return wram_span_ptr(addr, len);
 }
 
-static void fill_mon(PkMon *m, const PartyMon *p) {
-    m->species = p->species;
-    m->level = p->level;
-    m->hp = p->current_hp;
-    m->max_hp = p->max_hp;
-    memcpy(m->moves, p->moves, sizeof(m->moves));
-    memcpy(m->pp, p->pp, sizeof(m->pp));
-}
-
-static void fill_battler(PkMon *m, const BattleMon *b) {
-    memset(m, 0, sizeof(*m));
-    m->species = b->species;
-    m->hp = b->hp;
-    m->max_hp = b->max_hp;
-    m->level = b->level;
-}
-
-static uint8_t ram_read(void *ctx, uint16_t addr) { (void)ctx; return mem_read(addr); }
-static void ram_write(void *ctx, uint16_t addr, uint8_t val) { (void)ctx; mem_write(addr, val); }
+static uint8_t nat_peek(void *impl, uint16_t addr) { (void)impl; return mem_read(addr); }
+static void nat_poke(void *impl, uint16_t addr, uint8_t val) { (void)impl; mem_write(addr, val); }
 
 static void *nat_create(const PkBackendConfig *cfg, const PkOptions *opts) {
     NativeBackend *be = (NativeBackend *)calloc(1, sizeof(NativeBackend));
@@ -82,17 +57,12 @@ static void *nat_create(const PkBackendConfig *cfg, const PkOptions *opts) {
     ecfg.text_scroll = false;
     ecfg.cut_hooks = false;
     ecfg.fast_mode = (uint8_t)pk_opt_int(opts, "fast_mode", POKERED_FAST_OFF);
-    ecfg.text_speed = (uint8_t)pk_opt_int(opts, "text_speed", OPTION_TEXT_SPEED_KEEP);
-    ecfg.battle_animation = (uint8_t)pk_opt_int(opts, "battle_animation", OPTION_BATTLE_ANIMATION_KEEP);
-    ecfg.battle_style = (uint8_t)pk_opt_int(opts, "battle_style", OPTION_BATTLE_STYLE_KEEP);
     be->decision_mode = pk_opt_bool(opts, "decision_step_enabled", false);
     be->auto_text = pk_opt_bool(opts, "auto_text_enabled", false);
     be->decision_max_frames = (unsigned)pk_opt_int(opts, "decision_max_frames", 3600);
     be->screen_half = pk_opt_bool(opts, "screen_half_enabled", false);
-    if (ecfg.fast_mode > POKERED_FAST_GAME || ecfg.text_speed > OPTION_TEXT_SPEED_SLOW ||
-        ecfg.battle_animation > OPTION_BATTLE_ANIMATION_OFF || ecfg.battle_style > OPTION_BATTLE_STYLE_SET) {
-        fprintf(stderr, "pokered: native backend: fast_mode (0-3), text_speed (0-3), battle_animation (0-2) or "
-                        "battle_style (0-2) out of range\n");
+    if (ecfg.fast_mode > POKERED_FAST_GAME) {
+        fprintf(stderr, "pokered: native backend: fast_mode (0-3) out of range\n");
         exit(1);
     }
     if ((ecfg.fast_mode & POKERED_FAST_NO_VIDEO) && cfg->screen_obs_enabled)
@@ -108,7 +78,6 @@ static void *nat_create(const PkBackendConfig *cfg, const PkOptions *opts) {
     pokered_make_current(be->handle);
     game_init(be->ctx);
     game_load_state(be->ctx, start_state.work_ram, start_state.high_ram);
-    pokered_env_apply_options(be->env);
 
     be->start_size = pokered_state_size();
     be->start = malloc(be->start_size);
@@ -138,32 +107,24 @@ static void nat_acquire(void *impl) { pokered_make_current(((NativeBackend *)imp
 static void nat_release(void *impl) { (void)impl; }
 static void nat_warmup(void *impl) { (void)impl; }
 
-static void nat_reset(void *impl, bool full_reset, unsigned *rng) {
+static void nat_reset(void *impl, bool full_reset) {
     NativeBackend *be = (NativeBackend *)impl;
-    (void)rng;
-    pk_events_rebase(&be->events);
     if (!full_reset)
         return;
     if (!pokered_state_load(be->handle, be->ctx, be->start, be->start_size)) {
         fprintf(stderr, "pokered: native backend could not restore its start state\n");
         exit(1);
     }
-    PkRam ram = {NULL, ram_read, ram_write};
-    pk_ram_clear_cut(&ram, &be->events);
 }
 
-static void nat_step(void *impl, int action, const PkSnapshot *last) {
+static void nat_step(void *impl, unsigned buttons) {
     NativeBackend *be = (NativeBackend *)impl;
     const PkBackendConfig *cfg = &be->cfg;
-
-    PkRam ram = {NULL, ram_read, ram_write};
-    pk_ram_apply_scenario(&ram, cfg, last);
 
     int skip = cfg->frameskip > 0 ? cfg->frameskip : 24;
     int press = cfg->press_frames > 0 ? cfg->press_frames : 8;
     if (press > skip)
         press = skip;
-    unsigned buttons = pk_action_buttons(action);
     uint8_t keys = (buttons & PK_BTN_A ? BTN_A : 0) | (buttons & PK_BTN_B ? BTN_B : 0) |
                    (buttons & PK_BTN_SELECT ? BTN_SELECT : 0) | (buttons & PK_BTN_START ? BTN_START : 0) |
                    (buttons & PK_BTN_RIGHT ? BTN_RIGHT : 0) | (buttons & PK_BTN_LEFT ? BTN_LEFT : 0) |
@@ -174,58 +135,12 @@ static void nat_step(void *impl, int action, const PkSnapshot *last) {
         for (int f = 0; f < skip; f++)
             game_frame(be->ctx, f < press ? keys : 0);
     }
-    pk_ram_track_cut(&ram, &be->events, last);
-    pk_events_stepped(&be->events);
 }
 
 static void nat_snapshot(void *impl, PkSnapshot *s) {
-    NativeBackend *be = (NativeBackend *)impl;
-    memset(s, 0, sizeof(*s));
-
-    s->x = g_wram.x_coord;
-    s->y = g_wram.y_coord;
-    s->map_n = g_wram.cur_map;
-    s->facing = mem_read(PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION) / 4;
-    s->badges = mem_read(PKRED_ADDR_OBTAINED_BADGES);
-    s->party_count = g_wram.party_count > 6 ? 6 : g_wram.party_count;
-    for (int i = 0; i < s->party_count; i++)
-        fill_mon(&s->party[i], &g_wram.party_mons[i]);
-    s->pokedex_owned_count = (uint8_t)popcount_bytes(g_wram.pokedex_owned, POKEDEX_BYTES);
-    s->pokedex_seen_count = (uint8_t)popcount_bytes(g_wram.pokedex_seen, POKEDEX_BYTES);
-
-    s->hp_fraction = 1.0f;
-    if (s->party_count > 0) {
-        uint32_t total_hp = 0, total_maxhp = 0;
-        for (int i = 0; i < s->party_count; i++) {
-            total_hp += s->party[i].hp;
-            total_maxhp += s->party[i].max_hp;
-        }
-        s->hp_fraction = (total_maxhp > 0) ? (float)total_hp / (float)total_maxhp : 1.0f;
-    }
-
-    s->in_battle = (int8_t)g_wram.is_in_battle;
-    if (s->in_battle == 1 || s->in_battle == 2) {
-        fill_battler(&s->battle_mon, &g_wram.battle_mon);
-        s->escaped = g_wram.escaped_from_battle || g_wram.battle_result == 2;
-        fill_battler(&s->enemy_mon, &g_wram.enemy_mon);
-    }
-
-    s->bag_count = g_wram.num_bag_items > PKRED_BAG_ITEM_CAPACITY ? PKRED_BAG_ITEM_CAPACITY : g_wram.num_bag_items;
-    for (int i = 0; i < s->bag_count; i++) {
-        s->bag[i].item = g_wram.bag_items[2 * i];
-        s->bag[i].count = g_wram.bag_items[2 * i + 1];
-    }
-
-    s->surfing = g_wram.walk_bike_surf_state == PKRED_SURF_STATE;
-    s->strength_active = g_wram.status_flags1.strength_active;
-    s->used_fly = g_wram.status_flags7.used_fly;
-    s->dark_cave = g_wram.map_pal_offset == PKRED_PAL_DARK_CAVE;
-    s->map_block_hash = pkred_hash_bytes(g_wram.overworld_map, PKRED_OVERWORLD_MAP_SIZE);
-
-    for (size_t i = 0; i < EVENT_COUNT; ++i)
-        s->events[i] = (mem_read(EVENT_LIST[i].address) >> EVENT_LIST[i].bit) & 1;
-
-    pk_events_apply(&be->events, s);
+    (void)impl;
+    const PkMemReader reader = {NULL, mem_u8, mem_u16, mem_span};
+    pk_snapshot_extract(&reader, s);
 }
 
 static const uint8_t *nat_shades(NativeBackend *be, uint8_t *buf) {
@@ -271,10 +186,7 @@ static bool nat_frame_rgba(void *impl, uint8_t *rgba) {
 static bool nat_export_state(void *impl, PkState *out) {
     NativeBackend *be = (NativeBackend *)impl;
     pokered_make_current(be->handle);
-    for (int i = 0; i < PK_STATE_WRAM_SIZE; i++)
-        out->work_ram[i] = mem_read((uint16_t)(PK_STATE_WRAM_BASE + i));
-    for (int i = 0; i < PK_STATE_HRAM_SIZE; i++)
-        out->high_ram[i] = mem_read((uint16_t)(PK_STATE_HRAM_BASE + i));
+    game_save_state(be->ctx, out->work_ram, out->high_ram);
     memcpy(out->shade_rgb, be->shade_rgb, sizeof(out->shade_rgb));
     return true;
 }
@@ -289,17 +201,13 @@ static bool nat_state_save(void *impl, void *buf) {
 
 static bool nat_state_load(void *impl, const void *buf) {
     NativeBackend *be = (NativeBackend *)impl;
-    if (!pokered_state_load(be->handle, be->ctx, buf, pokered_state_size()))
-        return false;
-    pk_events_rebase(&be->events);
-    PkRam ram = {NULL, ram_read, ram_write};
-    pk_ram_clear_cut(&ram, &be->events);
-    return true;
+    return pokered_state_load(be->handle, be->ctx, buf, pokered_state_size());
 }
 
 static const PkBackend NATIVE_BACKEND = {
     "native",
-    nat_create, nat_destroy, nat_acquire, nat_release, nat_reset, nat_warmup, nat_step, nat_snapshot, nat_screen,
+    nat_create, nat_destroy, nat_acquire, nat_release, nat_reset, nat_warmup, nat_step, nat_snapshot,
+    nat_peek, nat_poke, nat_screen,
     nat_frame_rgba,
     NULL, nat_export_state,
     nat_state_size, nat_state_save, nat_state_load,

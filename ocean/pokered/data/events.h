@@ -1,8 +1,15 @@
-#ifndef EVENTS_H
-#define EVENTS_H
+#ifndef POKERED_EVENTS_H
+#define POKERED_EVENTS_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "ram_map.h"
+#include "../backend/backend.h"
 
 typedef struct {
     uint16_t address;
@@ -510,5 +517,45 @@ static const Event EVENT_LIST[] = {
     {0xD882, 2, "Beat Articuno"}
 };
 static const size_t EVENT_COUNT = sizeof(EVENT_LIST) / sizeof(Event);
+
+static inline int pk_event_flag_index(size_t i) {
+    return (EVENT_LIST[i].address - PKRED_ADDR_EVENT_FLAGS) * 8 + EVENT_LIST[i].bit;
+}
+
+static inline bool pk_event_flag_set(const uint8_t *flags, size_t i) {
+    int b = pk_event_flag_index(i);
+    return (flags[b >> 3] >> (b & 7)) & 1;
+}
+
+static struct {
+    pthread_once_t once;
+    uint8_t mask[PK_EVENT_FLAG_BYTES];
+    int16_t event_at[PK_EVENT_FLAG_BYTES * 8];
+} g_pk_events = {PTHREAD_ONCE_INIT};
+
+static void pk_events_table_build(void) {
+    for (int b = 0; b < PK_EVENT_FLAG_BYTES * 8; b++)
+        g_pk_events.event_at[b] = -1;
+    for (size_t i = 0; i < EVENT_COUNT; i++) {
+        int b = pk_event_flag_index(i);
+        if (b < 0 || b >= PK_EVENT_FLAG_BYTES * 8 || g_pk_events.event_at[b] >= 0) {
+            fprintf(stderr, "pokered: EVENT_LIST[%zu] (%s) is outside wEventFlags or a duplicate\n", i,
+                    EVENT_LIST[i].name);
+            exit(1);
+        }
+        g_pk_events.mask[b >> 3] |= (uint8_t)(1u << (b & 7));
+        g_pk_events.event_at[b] = (int16_t)i;
+    }
+}
+
+static inline void pk_events_table_init(void) { pthread_once(&g_pk_events.once, pk_events_table_build); }
+
+static inline int pk_completed_events(const uint8_t *flags) {
+    pk_events_table_init();
+    int n = 0;
+    for (int b = 0; b < PK_EVENT_FLAG_BYTES; b++)
+        n += __builtin_popcount(flags[b] & g_pk_events.mask[b]);
+    return n;
+}
 
 #endif

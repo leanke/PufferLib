@@ -11,7 +11,11 @@ extern "C" {
 
 #define PK_FRAME_W 160
 #define PK_FRAME_H 144
-#define PK_MAX_EVENTS 512
+#define PK_EVENT_FLAG_BYTES 320
+#define PK_TILE_MAP_W 20
+#define PK_TILE_MAP_H 18
+#define PK_TILE_MAP_CELLS (PK_TILE_MAP_W * PK_TILE_MAP_H)
+#define PK_SPRITES 16
 
 typedef struct {
     uint8_t species, level;
@@ -25,11 +29,12 @@ typedef struct {
     uint8_t facing;
     uint8_t badges;
     uint8_t party_count;
+    uint8_t box_count;
     PkMon party[6];
     uint8_t pokedex_owned_count, pokedex_seen_count;
     float hp_fraction;
 
-    uint8_t escaped;
+    uint8_t battle_result;
 
     int8_t in_battle;
     PkMon battle_mon;
@@ -41,7 +46,10 @@ typedef struct {
     uint8_t surfing, strength_active, used_fly, dark_cave, cut_used;
     uint32_t map_block_hash;
 
-    uint8_t events[PK_MAX_EVENTS];
+    uint8_t event_flags[PK_EVENT_FLAG_BYTES];
+
+    uint8_t tile_map[PK_TILE_MAP_CELLS];
+    struct { uint8_t picture, image, y, x; } sprites[PK_SPRITES];
 
     uint32_t step_events;
 } PkSnapshot;
@@ -67,9 +75,6 @@ typedef struct {
     char rom_path[256];
     char state_path[256];
     bool pkstate_cache_enabled;
-
-    bool disable_wild_until_badge;
-    bool route22_rival_beaten, route22_rival_2nd_beaten;
 } PkBackendConfig;
 
 typedef struct PkOptions {
@@ -108,6 +113,12 @@ static inline bool pk_kv_lookup(void *ctx, const char *key, double *num, const c
 
 struct PkState;
 
+typedef struct PkRam {
+    void *ctx;
+    uint8_t (*read)(void *ctx, uint16_t addr);
+    void (*write)(void *ctx, uint16_t addr, uint8_t val);
+} PkRam;
+
 typedef struct PkBackend {
     const char *name;
 
@@ -117,13 +128,16 @@ typedef struct PkBackend {
     void (*acquire)(void *impl);
     void (*release)(void *impl);
 
-    void (*reset)(void *impl, bool full_reset, unsigned *rng);
+    void (*reset)(void *impl, bool full_reset);
 
     void (*warmup)(void *impl);
 
-    void (*step)(void *impl, int action, const PkSnapshot *last);
+    void (*step)(void *impl, unsigned buttons);
 
     void (*snapshot)(void *impl, PkSnapshot *out);
+
+    uint8_t (*peek)(void *impl, uint16_t addr);
+    void (*poke)(void *impl, uint16_t addr, uint8_t val);
 
     void (*screen)(void *impl, float *out);
 
@@ -151,5 +165,86 @@ int pk_event_bit(int idx);
 #ifdef __cplusplus
 }
 #endif
+
+#define SCREEN_WIDTH 160
+#define SCALED_WIDTH 80
+#define SCALED_HEIGHT 72
+#define SCALED_PIXELS (SCALED_WIDTH * SCALED_HEIGHT)
+
+#define TILE_OBS_OFFSET 0
+#define SPRITE_OBS_OFFSET 360
+#define TILE_SPRITE_NPC 1
+#define TILE_SPRITE_PLAYER 2
+
+#define PARTY_SIZE 6
+#define MON_FIELDS 3
+#define PARTY_OBS (PARTY_SIZE * MON_FIELDS)
+
+#define BATTLE_TYPE_NONE 0
+#define BATTLE_TYPE_WILD 1
+#define BATTLE_TYPE_TRAINER 2
+#define BATTLE_TYPE_COUNT 3
+#define BATTLE_OBS (1 + 2 * MON_FIELDS)
+#define BATTLE_PLAYER_MON_OFFSET 1
+#define BATTLE_ENEMY_MON_OFFSET (1 + MON_FIELDS)
+
+#define BAG_SLOTS 20
+#define BAG_FIELDS 2
+#define BAG_OBS (BAG_SLOTS * BAG_FIELDS)
+
+#define BLOCK_PIXELS 16
+#define BLOCKS_WIDE (SCREEN_WIDTH / BLOCK_PIXELS)
+#define BLOCKS_TALL (144 / BLOCK_PIXELS)
+#define PLAYER_BLOCK_COL 4
+#define PLAYER_BLOCK_ROW 4
+
+#define VISITED_MASK_OBS (BLOCKS_WIDE * BLOCKS_TALL)
+
+#ifdef POKERED_OBS_U8
+#define PK_OBS_HP_SCALE 255.0f
+#else
+#define PK_OBS_HP_SCALE 1.0f
+#endif
+
+#define TOTAL_OBSERVATIONS (SCALED_PIXELS + VISITED_MASK_OBS + BATTLE_OBS + PARTY_OBS + BAG_OBS)
+#define VISITED_MASK_OFFSET SCALED_PIXELS
+#define BATTLE_OBS_OFFSET (VISITED_MASK_OFFSET + VISITED_MASK_OBS)
+#define PARTY_OBS_OFFSET (BATTLE_OBS_OFFSET + BATTLE_OBS)
+#define BAG_OBS_OFFSET (PARTY_OBS_OFFSET + PARTY_OBS)
+
+typedef enum {
+    PKRED_ACTION_A = 0,
+    PKRED_ACTION_B,
+    PKRED_ACTION_RIGHT,
+    PKRED_ACTION_LEFT,
+    PKRED_ACTION_UP,
+    PKRED_ACTION_DOWN,
+    PKRED_ACTION_START,
+    PKRED_ACTION_SELECT,
+    PKRED_ACTION_COUNT
+} PokeredAction;
+
+#define PK_BTN_A      0x01u
+#define PK_BTN_B      0x02u
+#define PK_BTN_SELECT 0x04u
+#define PK_BTN_START  0x08u
+#define PK_BTN_RIGHT  0x10u
+#define PK_BTN_LEFT   0x20u
+#define PK_BTN_UP     0x40u
+#define PK_BTN_DOWN   0x80u
+
+static inline unsigned pk_action_buttons(int action) {
+    switch (action) {
+    case PKRED_ACTION_A: return PK_BTN_A;
+    case PKRED_ACTION_B: return PK_BTN_B;
+    case PKRED_ACTION_RIGHT: return PK_BTN_RIGHT;
+    case PKRED_ACTION_LEFT: return PK_BTN_LEFT;
+    case PKRED_ACTION_UP: return PK_BTN_UP;
+    case PKRED_ACTION_DOWN: return PK_BTN_DOWN;
+    case PKRED_ACTION_START: return PK_BTN_START;
+    case PKRED_ACTION_SELECT: return PK_BTN_SELECT;
+    default: return 0;
+    }
+}
 
 #endif
