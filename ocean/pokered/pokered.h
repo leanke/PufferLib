@@ -14,12 +14,19 @@ typedef float obs_t;
 #include "data/ram_map.h"
 #include "data/events.h"
 #include "data/utils.h"
+#include "pokered_stream.h"
 #include "backend/backend.h"
 #include "backend/pksnapshot.h"
+#include "pokered_items.h"
 
 #define ACT_SIZES {PKRED_ACTION_COUNT}
-#define OBS_SIZE TOTAL_OBSERVATIONS
 #define NUM_ATNS 1
+
+static int g_pokered_obs_tiles = -1;
+static inline int pokered_obs_size(void) {
+    return g_pokered_obs_tiles > 0 ? TILES_TOTAL_OBSERVATIONS : SCREEN_TOTAL_OBSERVATIONS;
+}
+#define OBS_SIZE pokered_obs_size()
 
 #define PK_REWARD_SIGNALS(X)                                       \
     X(explore, signal_exploration, "weight_exploration", 0, 1)    \
@@ -31,8 +38,7 @@ typedef float obs_t;
     X(death, signal_none, "weight_death", 1, 0)                    \
     X(fleeing, signal_fleeing, "weight_fleeing", 1, 1)             \
     X(healing, signal_healing, "weight_healing", 0, 1)             \
-    X(hm_taught, signal_hm_taught, "weight_hm_taught", 0, 1)       \
-    X(hm_used, signal_hm_used, "weight_hm_used", 0, 1)
+    X(item_used, signal_item_used, "weight_item_used", 0, 1)
 
 #define PK_SIG_FIELD(name, fn, key, penalty, summed) float name;
 #define PK_SIG_ENUM(name, fn, key, penalty, summed) PK_SIG_##name,
@@ -50,6 +56,8 @@ struct Log {
     float party_count;
     float badges;
     float event_sum;
+    float progress;
+    float progress_gained;
     float unique_coords;
     float map_exhaustion;
     float pokedex_owned;
@@ -77,6 +85,7 @@ struct Env {
 
     int32_t step_count;
     float score;
+    int progress_start;
     int prev_action;
     RewardTotals totals;
     PokeredStream stream;
@@ -87,6 +96,7 @@ struct Env {
     uint32_t unique_coords_count;
     uint8_t *prev_events;
     uint8_t *paid_events;
+    uint8_t event_skip[PK_EVENT_FLAG_BYTES];
     bool event_reward_once;
     bool start_select_enabled;
 
@@ -97,11 +107,25 @@ struct Env {
     float healing_health_left;
     float healing_pp_left;
     uint8_t hm_used_mask;
+    bool hm_taught_once;
+    uint8_t hm_taught_mask;
+    bool item_used_consumables_enabled;
+    bool item_used_key_items_enabled;
+    uint8_t key_item_mask;
+    PkItemUse item_use;
+    bool tm_taught_enabled;
+    uint64_t tm_pending;
+    int tm_pending_steps;
     int exploration_cell_size;
     bool exploration_death_scaling_enabled;
 
     bool screen_obs_enabled;
     bool obs_tiles;
+    bool obs_info_enabled;
+    bool obs_walkable_enabled;
+    bool obs_sprite_ids_enabled;
+    bool obs_mon_detail_enabled;
+    bool obs_item_context_enabled;
     float map_exhaustion_norm;
 
     bool verbose;
@@ -112,8 +136,6 @@ struct Env {
     bool show_obs_view;
 };
 typedef Env Pokered;
-
-static int g_pokered_obs_tiles = -1;
 
 static inline bool is_directional_action(int action) {
     return action >= PKRED_ACTION_RIGHT && action <= PKRED_ACTION_DOWN;
@@ -164,6 +186,7 @@ static void env_advance(Env *env, int action) {
 
 #include "pokered_obs.h"
 #include "pokered_rew.h"
+#include "pokered_progress.h"
 
 static void clear_visited(Env *env) {
     env->unique_coords_count = 0;
@@ -188,6 +211,9 @@ static void add_log(Env *env) {
     log->party_count += s->party_count;
     log->badges += __builtin_popcount(s->badges);
     log->event_sum += completed_event_count(s);
+    int progress = pk_progress(s);
+    log->progress += progress;
+    log->progress_gained += progress - env->progress_start;
     log->unique_coords += env->unique_coords_count;
     log->map_exhaustion +=
         fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
@@ -230,6 +256,15 @@ static void read_reward_config(Env *env, Dict *kw) {
     PK_REWARD_SIGNALS(PK_SIG_READ)
 #undef PK_SIG_READ
     env->hm_used_once = kw_bool(kw, "hm_used_once");
+    env->tm_taught_enabled = kw_bool(kw, "tm_taught_enabled");
+    env->hm_taught_once = kw_bool(kw, "hm_taught_once");
+    env->item_used_consumables_enabled = kw_bool(kw, "item_used_consumables_enabled");
+    env->item_used_key_items_enabled = kw_bool(kw, "item_used_key_items_enabled");
+    memset(env->event_skip, 0, sizeof(env->event_skip));
+    if (env->item_used_key_items_enabled) {
+        env->event_skip[PKRED_ADDR_ROUTE12_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE12_SNORLAX_BIT;
+        env->event_skip[PKRED_ADDR_ROUTE16_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE16_SNORLAX_BIT;
+    }
     env->healing_health_left = kw_float(kw, "healing_health_left");
     env->healing_pp_left = kw_float(kw, "healing_pp_left");
     if (env->healing_health_left < 0.0f || env->healing_health_left > 1.0f || env->healing_pp_left < 0.0f ||
@@ -245,19 +280,31 @@ static void read_reward_config(Env *env, Dict *kw) {
     env->exploration_death_scaling_enabled = kw_bool(kw, "exploration_death_scaling_enabled");
 }
 
-static void read_observation_config(Env *env, Dict *kw) {
-    env->screen_obs_enabled = kw_bool(kw, "screen_obs_enabled");
+static bool pokered_set_obs_mode(Dict *kw) {
     const char *mode = kw_str(kw, "obs_mode", "screen");
     if (strcmp(mode, "screen") && strcmp(mode, "tiles")) {
         fprintf(stderr, "pokered: obs_mode must be \"screen\" or \"tiles\", got \"%s\"\n", mode);
         exit(1);
     }
-    env->obs_tiles = !strcmp(mode, "tiles");
-    if (g_pokered_obs_tiles >= 0 && g_pokered_obs_tiles != (int)env->obs_tiles) {
+    bool tiles = !strcmp(mode, "tiles");
+    if (g_pokered_obs_tiles >= 0 && g_pokered_obs_tiles != (int)tiles) {
         fprintf(stderr, "pokered: every env in a process must use the same obs_mode\n");
         exit(1);
     }
-    g_pokered_obs_tiles = env->obs_tiles;
+    g_pokered_obs_tiles = tiles;
+    return tiles;
+}
+
+#define PUF_ENV_PREINIT(kw) pokered_set_obs_mode(kw)
+
+static void read_observation_config(Env *env, Dict *kw) {
+    env->screen_obs_enabled = kw_bool(kw, "screen_obs_enabled");
+    env->obs_tiles = pokered_set_obs_mode(kw);
+    env->obs_info_enabled = kw_bool(kw, "obs_info_enabled");
+    env->obs_walkable_enabled = kw_bool(kw, "obs_walkable_enabled");
+    env->obs_sprite_ids_enabled = kw_bool(kw, "obs_sprite_ids_enabled");
+    env->obs_mon_detail_enabled = kw_bool(kw, "obs_mon_detail_enabled");
+    env->obs_item_context_enabled = kw_bool(kw, "obs_item_context_enabled");
     env->map_exhaustion_norm = kw_float(kw, "map_exhaustion_norm");
     if (env->map_exhaustion_norm <= 0.0f)
         env->map_exhaustion_norm = 1.0f;
@@ -353,9 +400,15 @@ void puf_init(Env *env, Dict *kwargs) {
     pk_events_table_init();
     env->prev_action = -1;
 
-    stream_init(&env->stream, kw_bool(kwargs, "stream_enabled"),
-                kw_str(kwargs, "stream_user", "User"), kw_str(kwargs, "stream_color", "#0000FF"),
-                env->rng, kw_int(kwargs, "stream_interval"));
+    StreamConfig sc;
+    sc.enabled = kw_bool(kwargs, "stream_enabled");
+    sc.async = kw_bool(kwargs, "stream_async");
+    sc.interval = kw_int(kwargs, "stream_interval");
+    sc.connections = kw_int(kwargs, "stream_connections");
+    sc.queue_mb = kw_int(kwargs, "stream_queue_mb");
+    sc.user = kw_str(kwargs, "stream_user", "User");
+    sc.color = kw_str(kwargs, "stream_color", "#0000FF");
+    stream_init(&env->stream, &sc);
 }
 
 static void update_action_mask(Env *env) {
@@ -390,8 +443,14 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->agents[0].terminals[0] = 0;
     env->step_count = 0;
     env->score = 0.0f;
+    env->progress_start = pk_progress(&env->cur);
     env->prev_action = -1;
     env->hm_used_mask = 0;
+    env->hm_taught_mask = 0;
+    env->key_item_mask = 0;
+    memset(&env->item_use, 0, sizeof(env->item_use));
+    env->tm_pending = 0;
+    env->tm_pending_steps = 0;
     memset(&env->totals, 0, sizeof(env->totals));
     memcpy(env->prev_events, env->cur.event_flags, PK_EVENT_FLAG_BYTES);
     memcpy(env->paid_events, env->cur.event_flags, PK_EVENT_FLAG_BYTES);
@@ -408,7 +467,9 @@ void puf_reset(Env *env) {
 
 static void end_episode(Env *env) {
     add_log(env);
+    float reward = env->agents[0].rewards[0];
     puf_reset_body(env, true);
+    env->agents[0].rewards[0] = reward;
     env->agents[0].terminals[0] = 1;
 }
 
@@ -471,7 +532,7 @@ static void render_init(Env* env, int width, int height, unsigned flags) {
 static void obs_view_screen(Env* env, const obs_t* obs) {
     for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
         for (int sx = 0; sx < SCALED_WIDTH; sx++) {
-            uint8_t gray = (uint8_t)obs[sy * SCALED_WIDTH + sx];
+            uint8_t gray = (uint8_t)obs[SCREEN_OBS_OFFSET + sy * SCALED_WIDTH + sx];
             for (int dy = 0; dy < 2; dy++) {
                 for (int dx = 0; dx < 2; dx++) {
                     int x = sx * 2 + dx;
@@ -515,11 +576,20 @@ static void obs_view_tiles(Env* env, const obs_t* obs) {
 
 static void obs_view_sprites(Env* env, const obs_t* obs) {
     for (int cell = 0; cell < PK_TILE_MAP_CELLS; cell++) {
-        int sprite = (int)obs[SPRITE_OBS_OFFSET + cell];
-        if (!sprite)
-            continue;
-        Color tint = sprite == TILE_SPRITE_PLAYER ? (Color){230, 30, 30, 255} : (Color){200, 0, 200, 255};
         int r = cell / PK_TILE_MAP_W, c = cell % PK_TILE_MAP_W;
+        int sprite = (int)obs[SPRITE_OBS_OFFSET + cell];
+        if (!sprite) {
+            if (obs[WALKABLE_OBS_OFFSET + cell] == 0)
+                continue;
+            for (int y = 0; y < 8; y += 7)
+                for (int x = 0; x < 8; x++) {
+                    uint8_t* a = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
+                    uint8_t* b = &env->render_pixels[((r * 8 + x) * PK_FRAME_W + c * 8 + y) * 4];
+                    a[0] = b[0] = 0; a[1] = b[1] = 160; a[2] = b[2] = 255;
+                }
+            continue;
+        }
+        Color tint = ColorFromHSV(fmodf((float)sprite * 57.0f, 360.0f), 0.9f, 0.9f);
         for (int y = 0; y < 8; y++) {
             for (int x = 0; x < 8; x++) {
                 uint8_t* out = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
@@ -686,6 +756,8 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "pokedex_seen", log->pokedex_seen);
     dict_set(out, "badges", log->badges);
     dict_set(out, "event_sum", log->event_sum);
+    dict_set(out, "progress", log->progress);
+    dict_set(out, "progress_gained", log->progress_gained);
 
     dict_set(out, "pkmn1_lvl", log->pkmn_lvl[0]);
     dict_set(out, "pkmn2_lvl", log->pkmn_lvl[1]);

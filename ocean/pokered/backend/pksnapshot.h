@@ -68,11 +68,13 @@ static inline __attribute__((always_inline)) int pk_snap_popcount(const PkMemRea
 }
 
 static inline __attribute__((always_inline)) void pk_snap_battler(const PkMemReader *m, PkMon *out, uint16_t species,
-                                                                  uint16_t hp, uint16_t max_hp, uint16_t level) {
+                                                                  uint16_t hp, uint16_t max_hp, uint16_t level,
+                                                                  uint16_t status) {
     out->species = m->u8(m->ctx, species);
     out->hp = m->u16(m->ctx, hp);
     out->max_hp = m->u16(m->ctx, max_hp);
     out->level = m->u8(m->ctx, level);
+    out->status = m->u8(m->ctx, status);
 }
 
 static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMemReader *m, PkSnapshot *s) {
@@ -82,8 +84,10 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
     s->x = m->u8(c, PKRED_ADDR_X_COORD);
     s->y = m->u8(c, PKRED_ADDR_Y_COORD);
     s->map_n = m->u8(c, PKRED_ADDR_CUR_MAP);
+    s->tileset = m->u8(c, PKRED_ADDR_CUR_MAP_TILESET);
     s->facing = m->u8(c, PKRED_ADDR_PLAYER_SPRITE_FACING_DIRECTION) / 4;
     s->badges = m->u8(c, PKRED_ADDR_OBTAINED_BADGES);
+    s->towns_visited = (uint16_t)(m->u8(c, PKRED_ADDR_TOWN_VISITED) | m->u8(c, PKRED_ADDR_TOWN_VISITED + 1) << 8);
 
     uint8_t party = m->u8(c, PKRED_ADDR_PARTY_COUNT);
     s->party_count = party > 6 ? 6 : party;
@@ -92,6 +96,7 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
         PkMon *mon = &s->party[i];
         mon->species = m->u8(c, (uint16_t)(base + offsetof(PkredPartyMon, species)));
         mon->level = m->u8(c, (uint16_t)(base + offsetof(PkredPartyMon, level)));
+        mon->status = m->u8(c, (uint16_t)(base + offsetof(PkredPartyMon, status)));
         mon->hp = m->u16(c, (uint16_t)(base + offsetof(PkredPartyMon, hp_hi)));
         mon->max_hp = m->u16(c, (uint16_t)(base + offsetof(PkredPartyMon, max_hp_hi)));
         for (int k = 0; k < 4; k++) {
@@ -120,10 +125,14 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
     s->in_battle = (int8_t)m->u8(c, PKRED_ADDR_IS_IN_BATTLE);
     if (s->in_battle == 1 || s->in_battle == 2) {
         pk_snap_battler(m, &s->battle_mon, PKRED_ADDR_BATTLE_MON_SPECIES, PKRED_ADDR_BATTLE_MON_HP,
-                        PKRED_ADDR_BATTLE_MON_MAX_HP, PKRED_ADDR_BATTLE_MON_LEVEL);
+                        PKRED_ADDR_BATTLE_MON_MAX_HP, PKRED_ADDR_BATTLE_MON_LEVEL, PKRED_ADDR_BATTLE_MON_STATUS);
+        for (int k = 0; k < 4; k++) {
+            s->battle_mon.moves[k] = m->u8(c, (uint16_t)(PKRED_ADDR_BATTLE_MON_MOVES + k));
+            s->battle_mon.pp[k] = m->u8(c, (uint16_t)(PKRED_ADDR_BATTLE_MON_PP + k));
+        }
         s->battle_result = m->u8(c, PKRED_ADDR_BATTLE_RESULT);
         pk_snap_battler(m, &s->enemy_mon, PKRED_ADDR_ENEMY_MON_SPECIES, PKRED_ADDR_ENEMY_MON_HP,
-                        PKRED_ADDR_ENEMY_MON_MAX_HP, PKRED_ADDR_ENEMY_MON_LEVEL);
+                        PKRED_ADDR_ENEMY_MON_MAX_HP, PKRED_ADDR_ENEMY_MON_LEVEL, PKRED_ADDR_ENEMY_MON_STATUS);
     }
 
     uint8_t bag = m->u8(c, PKRED_ADDR_NUM_BAG_ITEMS);
@@ -133,7 +142,9 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
         s->bag[i].count = m->u8(c, (uint16_t)(PKRED_ADDR_BAG_ITEMS + 2 * i + 1));
     }
 
-    s->surfing = m->u8(c, PKRED_ADDR_WALK_BIKE_SURF) == PKRED_SURF_STATE;
+    uint8_t walk_bike_surf = m->u8(c, PKRED_ADDR_WALK_BIKE_SURF);
+    s->surfing = walk_bike_surf == PKRED_SURF_STATE;
+    s->biking = walk_bike_surf == PKRED_BIKE_STATE;
     s->strength_active = (m->u8(c, PKRED_ADDR_STATUS_FLAGS1) >> PKRED_STATUS_FLAGS1_STRENGTH_BIT) & 1;
     s->used_fly = (m->u8(c, PKRED_ADDR_STATUS_FLAGS7) >> PKRED_STATUS_FLAGS7_USED_FLY_BIT) & 1;
     s->dark_cave = m->u8(c, PKRED_ADDR_MAP_PAL_OFFSET) == PKRED_PAL_DARK_CAVE;
@@ -155,6 +166,16 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
     else
         for (int i = 0; i < PK_TILE_MAP_CELLS; i++)
             s->tile_map[i] = m->u8(c, (uint16_t)(PKRED_ADDR_TILE_MAP + i));
+    uint16_t list = (uint16_t)(m->u8(c, PKRED_ADDR_LIST_POINTER) | m->u8(c, PKRED_ADDR_LIST_POINTER + 1) << 8);
+    if (list == PKRED_ADDR_NUM_BAG_ITEMS && m->u8(c, PKRED_ADDR_LIST_MENU_ID) == PKRED_ITEMLISTMENU) {
+        for (int row = 0; row < PKRED_LIST_MENU_ROWS; row++) {
+            uint8_t tile = s->tile_map[(PKRED_LIST_MENU_Y + 2 * row) * PK_TILE_MAP_W + PKRED_LIST_MENU_X];
+            if (tile == PKRED_TILE_CURSOR || tile == PKRED_TILE_CURSOR_HOLLOW) {
+                s->bag_cursor = (uint8_t)(m->u8(c, PKRED_ADDR_LIST_SCROLL_OFFSET) + row + 1);
+                break;
+            }
+        }
+    }
     for (int i = 0; i < PK_SPRITES; i++) {
         uint16_t base = (uint16_t)(PKRED_ADDR_SPRITE_STATE_DATA1 + i * PKRED_SPRITE_STATE_STRIDE);
         s->sprites[i].picture = m->u8(c, (uint16_t)(base + PKRED_SPRITE_PICTURE_ID));

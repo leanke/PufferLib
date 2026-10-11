@@ -52,10 +52,15 @@ run() {
     fi
     case "$mode" in
         train)
-            local total_agents
+            local total_agents tensorboard
             total_agents="$(prompt_total_agents)"
             if [ -n "$total_agents" ]; then
                 set -- "$@" "--vec.total_agents=$total_agents"
+            fi
+            # Blank keeps the ini value; prepended so an explicit --base.tensorboard in "$@" wins.
+            tensorboard="$(prompt_bool "base.tensorboard (TensorBoard logging, blank = config)" "")"
+            if [ -n "$tensorboard" ]; then
+                set -- "--base.tensorboard=$tensorboard" "$@"
             fi
             exec ./puffer train "$@"
             ;;
@@ -86,7 +91,7 @@ run() {
                 echo "no env given" >&2
                 exit 1
             fi
-            exec ./build.sh "$env" "$@"
+            POKERED_OBS_U8="${POKERED_OBS_U8:-1}" exec ./build.sh "$env" "$@"
             ;;
         test)
             # Pokered test suite (ocean/pokered/tests/run_all.sh suite). The tests link the vendor
@@ -105,8 +110,23 @@ run() {
             fi
             exec "$suite" suite "$@"
             ;;
+        tensorboard)
+            # ./run.sh tensorboard [LOGDIR=logs] [tensorboard args...]; runs show as <env>/<run_id>.
+            local logdir=logs
+            if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+                logdir="$1"
+                shift
+            fi
+            if command -v tensorboard >/dev/null 2>&1; then
+                exec tensorboard --logdir "$logdir" "$@"
+            elif python -c 'import tensorboard' >/dev/null 2>&1; then
+                exec python -m tensorboard.main --logdir "$logdir" "$@"
+            fi
+            echo "tensorboard not installed: pip install tensorboard" >&2
+            exit 1
+            ;;
         *)
-            echo "usage: $0 [train|eval|pokered|build|test] [section.key=value ...]" >&2
+            echo "usage: $0 [train|eval|pokered|build|test|tensorboard] [section.key=value ...]" >&2
             exit 1
             ;;
     esac

@@ -18,7 +18,7 @@ extern "C" {
 #define PK_SPRITES 16
 
 typedef struct {
-    uint8_t species, level;
+    uint8_t species, level, status;
     uint16_t hp, max_hp;
     uint8_t moves[4];
     uint8_t pp[4];
@@ -26,8 +26,10 @@ typedef struct {
 
 typedef struct {
     uint8_t x, y, map_n;
+    uint8_t tileset;
     uint8_t facing;
     uint8_t badges;
+    uint16_t towns_visited;
     uint8_t party_count;
     uint8_t box_count;
     PkMon party[6];
@@ -42,8 +44,9 @@ typedef struct {
 
     uint8_t bag_count;
     struct { uint8_t item, count; } bag[20];
+    uint8_t bag_cursor;
 
-    uint8_t surfing, strength_active, used_fly, dark_cave, cut_used;
+    uint8_t surfing, biking, strength_active, used_fly, dark_cave, cut_used;
     uint32_t map_block_hash;
 
     uint8_t event_flags[PK_EVENT_FLAG_BYTES];
@@ -171,14 +174,21 @@ int pk_event_bit(int idx);
 #define SCALED_HEIGHT 72
 #define SCALED_PIXELS (SCALED_WIDTH * SCALED_HEIGHT)
 
-#define TILE_OBS_OFFSET 0
-#define SPRITE_OBS_OFFSET 360
-#define TILE_SPRITE_NPC 1
-#define TILE_SPRITE_PLAYER 2
-
 #define PARTY_SIZE 6
-#define MON_FIELDS 3
+#define MON_FIELDS 5
+#define MON_SPECIES 0
+#define MON_LEVEL 1
+#define MON_HP 2
+#define MON_STATUS 3
+#define MON_PP 4
 #define PARTY_OBS (PARTY_SIZE * MON_FIELDS)
+
+#define INFO_MAP 0
+#define INFO_TILESET 1
+#define INFO_BADGES 2
+#define INFO_FACING 3
+#define INFO_OBS 4
+#define FACING_COUNT 4
 
 #define BATTLE_TYPE_NONE 0
 #define BATTLE_TYPE_WILD 1
@@ -189,8 +199,13 @@ int pk_event_bit(int idx);
 #define BATTLE_ENEMY_MON_OFFSET (1 + MON_FIELDS)
 
 #define BAG_SLOTS 20
-#define BAG_FIELDS 2
-#define BAG_OBS (BAG_SLOTS * BAG_FIELDS)
+#define BAG_FIELDS 4
+#define BAG_ITEM 0
+#define BAG_COUNT 1
+#define BAG_USABLE 2
+#define BAG_CURSOR 3
+#define BAG_HM_LEARNABLE (BAG_SLOTS * BAG_FIELDS)
+#define BAG_OBS (BAG_HM_LEARNABLE + PARTY_SIZE)
 
 #define BLOCK_PIXELS 16
 #define BLOCKS_WIDE (SCREEN_WIDTH / BLOCK_PIXELS)
@@ -206,11 +221,22 @@ int pk_event_bit(int idx);
 #define PK_OBS_HP_SCALE 1.0f
 #endif
 
-#define TOTAL_OBSERVATIONS (SCALED_PIXELS + VISITED_MASK_OBS + BATTLE_OBS + PARTY_OBS + BAG_OBS)
-#define VISITED_MASK_OFFSET SCALED_PIXELS
-#define BATTLE_OBS_OFFSET (VISITED_MASK_OFFSET + VISITED_MASK_OBS)
+#define INFO_OBS_OFFSET 0
+#define BATTLE_OBS_OFFSET (INFO_OBS_OFFSET + INFO_OBS)
 #define PARTY_OBS_OFFSET (BATTLE_OBS_OFFSET + BATTLE_OBS)
 #define BAG_OBS_OFFSET (PARTY_OBS_OFFSET + PARTY_OBS)
+#define VISITED_MASK_OFFSET (BAG_OBS_OFFSET + BAG_OBS)
+#define TAIL_OBS (VISITED_MASK_OFFSET + VISITED_MASK_OBS)
+
+#define SPATIAL_OBS_OFFSET TAIL_OBS
+#define SCREEN_OBS_OFFSET SPATIAL_OBS_OFFSET
+#define TILE_OBS_OFFSET SPATIAL_OBS_OFFSET
+#define SPRITE_OBS_OFFSET (TILE_OBS_OFFSET + PK_TILE_MAP_CELLS)
+#define WALKABLE_OBS_OFFSET (SPRITE_OBS_OFFSET + PK_TILE_MAP_CELLS)
+#define TILES_SPATIAL_OBS (3 * PK_TILE_MAP_CELLS)
+
+#define SCREEN_TOTAL_OBSERVATIONS (TAIL_OBS + SCALED_PIXELS)
+#define TILES_TOTAL_OBSERVATIONS (TAIL_OBS + TILES_SPATIAL_OBS)
 
 typedef enum {
     PKRED_ACTION_A = 0,

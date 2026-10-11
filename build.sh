@@ -18,7 +18,7 @@ set -e
 #   ./build.sh breakout --profile    # Kernel profiling binary
 #   ./build.sh pokered --no-native   # Skips cloning/building vendor/pokered-native
 #                                    # (--env.backend=native then errors).
-#   POKERED_OBS_U8=1 ./build.sh pokered  # uint8 observations (4x smaller obs buffers/uploads)
+#   POKERED_OBS_U8=0 ./build.sh pokered  # float observations (default 1: uint8, 4x smaller uploads)
 #   ./build.sh constellation         # Sweep dashboard -> ./seethestars
 #   ./build.sh cache_data            # Sweep log cache -> ./cache_data
 #   ./build.sh trailer               # 5.0 trailer -> ./resources/trailer/trailer (also exports diagrams)

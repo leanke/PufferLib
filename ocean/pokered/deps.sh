@@ -107,7 +107,7 @@ if [ "${POKERED_NO_NATIVE:-0}" != "1" ]; then
 fi
 
 EXTRA_CFLAGS+=(-D__LIBRETRO__ -DHAVE_CSTDINT)
-[ "${POKERED_OBS_U8:-0}" = "1" ] && EXTRA_CFLAGS+=(-DPOKERED_OBS_U8)
+[ "${POKERED_OBS_U8:-1}" = "1" ] && EXTRA_CFLAGS+=(-DPOKERED_OBS_U8)
 EXTRA_LDFLAGS+=(-lssl -lcrypto)
 if [ "$PLATFORM" = "Linux" ]; then
     EXTRA_LDFLAGS+=(-lstdc++)
