@@ -24,10 +24,7 @@
 
 #include "cJSON.h"
 
-#define STREAM_HOST "transdimensional.xyz"
-#define STREAM_PORT "443"
-#define STREAM_PATH "/broadcast"
-#define STREAM_RECEIVE_PATH "/receive"
+#define STREAM_DEFAULT_URL "wss://transdimensional.xyz/broadcast"
 #define STREAM_MAX_COORDS 8192
 #define STREAM_TIMEOUT_S 2
 #define STREAM_WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -51,7 +48,18 @@ typedef struct {
     int queue_mb;
     const char *user;
     const char *color;
+    const char *url;
 } StreamConfig;
+
+typedef struct {
+    bool tls;
+    char host[128];
+    char port[8];
+    char path[128];
+    char receive_path[128];
+} StreamEndpoint;
+
+static StreamEndpoint stream_endpoint = { true, "transdimensional.xyz", "443", "/broadcast", "/receive" };
 
 typedef struct {
     bool enabled;
@@ -190,6 +198,48 @@ static bool stream_extract_header(const char *response, const char *header,
     return true;
 }
 
+static bool stream_set_url(const char *url) {
+    StreamEndpoint e;
+    memset(&e, 0, sizeof(e));
+    const char *p;
+    if (!strncmp(url, "wss://", 6)) { e.tls = true; p = url + 6; }
+    else if (!strncmp(url, "ws://", 5)) { e.tls = false; p = url + 5; }
+    else return false;
+    size_t hlen = strcspn(p, ":/");
+    if (hlen == 0 || hlen >= sizeof(e.host)) return false;
+    memcpy(e.host, p, hlen);
+    p += hlen;
+    if (*p == ':') {
+        size_t plen = strcspn(++p, "/");
+        if (plen == 0 || plen >= sizeof(e.port)) return false;
+        memcpy(e.port, p, plen);
+        p += plen;
+    } else {
+        snprintf(e.port, sizeof(e.port), "%s", e.tls ? "443" : "80");
+    }
+    snprintf(e.path, sizeof(e.path), "%s", *p ? p : "/broadcast");
+    const char *slash = strrchr(e.path, '/');
+    snprintf(e.receive_path, sizeof(e.receive_path), "%.*s/receive", (int)(slash - e.path), e.path);
+    stream_endpoint = e;
+    return true;
+}
+
+static int stream_io_write(StreamConn *c, const void *buf, size_t n) {
+    if (c->ssl) return SSL_write(c->ssl, buf, (int)n);
+    size_t done = 0;
+    while (done < n) {
+        ssize_t rc = send(c->fd, (const char *)buf + done, n - done, MSG_NOSIGNAL);
+        if (rc <= 0) return -1;
+        done += (size_t)rc;
+    }
+    return (int)n;
+}
+
+static int stream_io_read(StreamConn *c, void *buf, size_t n) {
+    if (c->ssl) return SSL_read(c->ssl, buf, (int)n);
+    return (int)recv(c->fd, buf, n, 0);
+}
+
 static void stream_conn_init(StreamConn *c) {
     memset(c, 0, sizeof(*c));
     c->fd = -1;
@@ -209,7 +259,8 @@ static bool stream_conn_open(StreamConn *c, const char *path) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(STREAM_HOST, STREAM_PORT, &hints, &res) != 0 || !res)
+    const StreamEndpoint *ep = &stream_endpoint;
+    if (getaddrinfo(ep->host, ep->port, &hints, &res) != 0 || !res)
         return false;
 
     int fd = -1;
@@ -241,15 +292,19 @@ static bool stream_conn_open(StreamConn *c, const char *path) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) { close(fd); return false; }
-    SSL *ssl = SSL_new(ctx);
-    if (!ssl) { SSL_CTX_free(ctx); close(fd); return false; }
-    SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, STREAM_HOST);
-    if (SSL_connect(ssl) != 1) {
-        SSL_free(ssl); SSL_CTX_free(ctx); close(fd);
-        return false;
+    c->fd = fd;
+    if (ep->tls) {
+        c->ctx = SSL_CTX_new(TLS_client_method());
+        if (!c->ctx) { stream_conn_drop(c); return false; }
+        c->ssl = SSL_new(c->ctx);
+        if (!c->ssl) { stream_conn_drop(c); return false; }
+        SSL_set_fd(c->ssl, fd);
+        SSL_set_tlsext_host_name(c->ssl, ep->host);
+        if (SSL_connect(c->ssl) != 1) {
+            SSL_free(c->ssl); c->ssl = NULL;
+            stream_conn_drop(c);
+            return false;
+        }
     }
 
     unsigned char key_raw[16];
@@ -269,16 +324,16 @@ static bool stream_conn_open(StreamConn *c, const char *path) {
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: %s\r\n"
         "Sec-WebSocket-Version: 13\r\n\r\n",
-        path, STREAM_HOST, key_b64);
-    if (SSL_write(ssl, request, req_len) <= 0) {
-        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); close(fd);
+        path, ep->host, key_b64);
+    if (stream_io_write(c, request, (size_t)req_len) <= 0) {
+        stream_conn_drop(c);
         return false;
     }
 
     char response[1024];
-    int resp_len = SSL_read(ssl, response, sizeof(response) - 1);
+    int resp_len = stream_io_read(c, response, sizeof(response) - 1);
     if (resp_len <= 0) {
-        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); close(fd);
+        stream_conn_drop(c);
         return false;
     }
     response[resp_len] = '\0';
@@ -301,13 +356,10 @@ static bool stream_conn_open(StreamConn *c, const char *path) {
         }
     }
     if (!ok) {
-        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); close(fd);
+        stream_conn_drop(c);
         return false;
     }
 
-    c->fd = fd;
-    c->ctx = ctx;
-    c->ssl = ssl;
     c->connected = true;
     return true;
 }
@@ -342,7 +394,7 @@ static bool stream_conn_send_text(StreamConn *c, const char *payload, size_t len
     for (size_t i = 0; i < len; i++)
         frame[header_len + 4 + i] = (unsigned char)payload[i] ^ mask[i % 4];
 
-    int rc = SSL_write(c->ssl, frame, (int)(header_len + 4 + len));
+    int rc = stream_io_write(c, frame, header_len + 4 + len);
     free(frame);
     return rc > 0;
 }
@@ -350,7 +402,7 @@ static bool stream_conn_send_text(StreamConn *c, const char *payload, size_t len
 static bool stream_conn_read_exact(StreamConn *c, unsigned char *buf, size_t n) {
     size_t got = 0;
     while (got < n) {
-        int rc = SSL_read(c->ssl, buf + got, (int)(n - got));
+        int rc = stream_io_read(c, buf + got, n - got);
         if (rc <= 0) return false;
         got += (size_t)rc;
     }
@@ -392,7 +444,7 @@ static char *stream_conn_read_text(StreamConn *c) {
 static void stream_conn_close(StreamConn *c) {
     if (!c->connected) return;
     unsigned char close_frame[6] = { 0x88, 0x80, 0, 0, 0, 0 };
-    if (c->ssl) SSL_write(c->ssl, close_frame, sizeof(close_frame));
+    stream_io_write(c, close_frame, sizeof(close_frame));
     stream_conn_drop(c);
 }
 
@@ -484,7 +536,7 @@ static bool stream_sender_deliver(StreamMsg *m) {
     double now = stream_now();
     if (!slot->conn.connected) {
         if (now < slot->retry_at) return false;
-        if (!stream_conn_open(&slot->conn, STREAM_PATH)) {
+        if (!stream_conn_open(&slot->conn, stream_endpoint.path)) {
             slot->retry_at = now + slot->backoff;
             slot->backoff = slot->backoff * 2 > STREAM_BACKOFF_MAX_S ? STREAM_BACKOFF_MAX_S : slot->backoff * 2;
             return false;
@@ -650,6 +702,11 @@ static void stream_init(PokeredStream *s, const StreamConfig *cfg) {
     snprintf(s->user, sizeof(s->user), "%s", (cfg->user && cfg->user[0]) ? cfg->user : "User");
     snprintf(s->color, sizeof(s->color), "%s", (cfg->color && cfg->color[0]) ? cfg->color : "#0000FF");
     if (!s->enabled) return;
+    if (cfg->url && cfg->url[0] && !stream_set_url(cfg->url)) {
+        fprintf(stderr, "stream: invalid stream_url '%s' (want ws:// or wss://), streaming disabled\n", cfg->url);
+        s->enabled = false;
+        return;
+    }
 
     int idx = stream_next_env_index();
     stream_env_name(idx, s->env_name, sizeof(s->env_name));
@@ -671,7 +728,7 @@ static void stream_collect(PokeredStream *s, int x, int y, int map_n) {
 }
 
 static bool stream_try_send(PokeredStream *s) {
-    if (!stream_conn_open(&s->conn, STREAM_PATH)) return false;
+    if (!stream_conn_open(&s->conn, stream_endpoint.path)) return false;
     int *coords = (int *)malloc((size_t)3 * (s->coord_count > 0 ? s->coord_count : 1) * sizeof(int));
     if (!coords) return false;
     for (int i = 0; i < s->coord_count; i++) {

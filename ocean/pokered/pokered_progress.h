@@ -53,10 +53,12 @@ static PkProgCheckpoint PK_PROGRESS[] = {
 static pthread_once_t g_pk_progress_once = PTHREAD_ONCE_INIT;
 
 static void pk_progress_build(void) {
+    int events = 0;
     for (int i = 0; i < PK_PROGRESS_COUNT; i++) {
         PkProgCheckpoint *c = &PK_PROGRESS[i];
         if (c->kind != PK_PROG_EVENT)
             continue;
+        events++;
         for (size_t e = 0; e < EVENT_COUNT && c->bit < 0; e++)
             if (!strcmp(EVENT_LIST[e].name, c->event))
                 c->bit = (int)e;
@@ -64,6 +66,10 @@ static void pk_progress_build(void) {
             fprintf(stderr, "pokered: progress checkpoint \"%s\" is not in EVENT_LIST\n", c->event);
             exit(1);
         }
+    }
+    if (events != INFO_PROGRESS_BITS) {
+        fprintf(stderr, "pokered: %d progress events, INFO_PROGRESS_BITS is %d\n", events, INFO_PROGRESS_BITS);
+        exit(1);
     }
 }
 
@@ -79,6 +85,13 @@ static int pk_progress(const PkSnapshot *s) {
         }
     }
     return n;
+}
+
+static void pk_progress_event_bits(const PkSnapshot *s, obs_t *out) {
+    pthread_once(&g_pk_progress_once, pk_progress_build);
+    for (int i = 0, n = 0; i < PK_PROGRESS_COUNT; i++)
+        if (PK_PROGRESS[i].kind == PK_PROG_EVENT)
+            out[n++] = (obs_t)pk_event_flag_set(s->event_flags, (size_t)PK_PROGRESS[i].bit);
 }
 
 #endif

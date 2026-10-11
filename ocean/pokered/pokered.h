@@ -22,11 +22,7 @@ typedef float obs_t;
 #define ACT_SIZES {PKRED_ACTION_COUNT}
 #define NUM_ATNS 1
 
-static int g_pokered_obs_tiles = -1;
-static inline int pokered_obs_size(void) {
-    return g_pokered_obs_tiles > 0 ? TILES_TOTAL_OBSERVATIONS : SCREEN_TOTAL_OBSERVATIONS;
-}
-#define OBS_SIZE pokered_obs_size()
+#define OBS_SIZE TOTAL_OBSERVATIONS
 
 #define PK_REWARD_SIGNALS(X)                                       \
     X(explore, signal_exploration, "weight_exploration", 0, 1)    \
@@ -119,18 +115,15 @@ struct Env {
     int exploration_cell_size;
     bool exploration_death_scaling_enabled;
 
-    bool screen_obs_enabled;
-    bool obs_tiles;
     bool obs_info_enabled;
-    bool obs_walkable_enabled;
-    bool obs_sprite_ids_enabled;
+    bool obs_progress_enabled;
+    bool obs_moves_enabled;
     bool obs_mon_detail_enabled;
     bool obs_item_context_enabled;
     float map_exhaustion_norm;
 
     bool verbose;
 
-    float *screen_buf;
     Texture2D render_texture;
     uint8_t *render_pixels;
     bool show_obs_view;
@@ -184,9 +177,9 @@ static void env_advance(Env *env, int action) {
     pk_events_stepped(&env->tracker);
 }
 
+#include "pokered_progress.h"
 #include "pokered_obs.h"
 #include "pokered_rew.h"
-#include "pokered_progress.h"
 
 static void clear_visited(Env *env) {
     env->unique_coords_count = 0;
@@ -280,29 +273,10 @@ static void read_reward_config(Env *env, Dict *kw) {
     env->exploration_death_scaling_enabled = kw_bool(kw, "exploration_death_scaling_enabled");
 }
 
-static bool pokered_set_obs_mode(Dict *kw) {
-    const char *mode = kw_str(kw, "obs_mode", "screen");
-    if (strcmp(mode, "screen") && strcmp(mode, "tiles")) {
-        fprintf(stderr, "pokered: obs_mode must be \"screen\" or \"tiles\", got \"%s\"\n", mode);
-        exit(1);
-    }
-    bool tiles = !strcmp(mode, "tiles");
-    if (g_pokered_obs_tiles >= 0 && g_pokered_obs_tiles != (int)tiles) {
-        fprintf(stderr, "pokered: every env in a process must use the same obs_mode\n");
-        exit(1);
-    }
-    g_pokered_obs_tiles = tiles;
-    return tiles;
-}
-
-#define PUF_ENV_PREINIT(kw) pokered_set_obs_mode(kw)
-
 static void read_observation_config(Env *env, Dict *kw) {
-    env->screen_obs_enabled = kw_bool(kw, "screen_obs_enabled");
-    env->obs_tiles = pokered_set_obs_mode(kw);
     env->obs_info_enabled = kw_bool(kw, "obs_info_enabled");
-    env->obs_walkable_enabled = kw_bool(kw, "obs_walkable_enabled");
-    env->obs_sprite_ids_enabled = kw_bool(kw, "obs_sprite_ids_enabled");
+    env->obs_progress_enabled = kw_bool(kw, "obs_progress_enabled");
+    env->obs_moves_enabled = kw_bool(kw, "obs_moves_enabled");
     env->obs_mon_detail_enabled = kw_bool(kw, "obs_mon_detail_enabled");
     env->obs_item_context_enabled = kw_bool(kw, "obs_item_context_enabled");
     env->map_exhaustion_norm = kw_float(kw, "map_exhaustion_norm");
@@ -334,7 +308,6 @@ static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
     memset(bc, 0, sizeof(*bc));
     bc->env_id = env->rng;
     bc->verbose = env->verbose;
-    bc->screen_obs_enabled = env->screen_obs_enabled && !env->obs_tiles;
 
     bc->frameskip = kw_int(kw, "frameskip");
     bc->press_frames = kw_int(kw, "press_frames");
@@ -408,6 +381,7 @@ void puf_init(Env *env, Dict *kwargs) {
     sc.queue_mb = kw_int(kwargs, "stream_queue_mb");
     sc.user = kw_str(kwargs, "stream_user", "User");
     sc.color = kw_str(kwargs, "stream_color", "#0000FF");
+    sc.url = kw_str(kwargs, "stream_url", "");
     stream_init(&env->stream, &sc);
 }
 
@@ -529,25 +503,6 @@ static void render_init(Env* env, int width, int height, unsigned flags) {
     UnloadImage(img);
 }
 
-static void obs_view_screen(Env* env, const obs_t* obs) {
-    for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
-        for (int sx = 0; sx < SCALED_WIDTH; sx++) {
-            uint8_t gray = (uint8_t)obs[SCREEN_OBS_OFFSET + sy * SCALED_WIDTH + sx];
-            for (int dy = 0; dy < 2; dy++) {
-                for (int dx = 0; dx < 2; dx++) {
-                    int x = sx * 2 + dx;
-                    int y = sy * 2 + dy;
-                    uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
-                    out[0] = gray;
-                    out[1] = gray;
-                    out[2] = gray;
-                    out[3] = 255;
-                }
-            }
-        }
-    }
-}
-
 static Color tile_view_color(int tile) {
     if (tile == PKRED_TILE_BLANK)
         return WHITE;
@@ -569,33 +524,6 @@ static void obs_view_tiles(Env* env, const obs_t* obs) {
                     out[2] = grid ? (uint8_t)(col.b * 3 / 4) : col.b;
                     out[3] = 255;
                 }
-            }
-        }
-    }
-}
-
-static void obs_view_sprites(Env* env, const obs_t* obs) {
-    for (int cell = 0; cell < PK_TILE_MAP_CELLS; cell++) {
-        int r = cell / PK_TILE_MAP_W, c = cell % PK_TILE_MAP_W;
-        int sprite = (int)obs[SPRITE_OBS_OFFSET + cell];
-        if (!sprite) {
-            if (obs[WALKABLE_OBS_OFFSET + cell] == 0)
-                continue;
-            for (int y = 0; y < 8; y += 7)
-                for (int x = 0; x < 8; x++) {
-                    uint8_t* a = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
-                    uint8_t* b = &env->render_pixels[((r * 8 + x) * PK_FRAME_W + c * 8 + y) * 4];
-                    a[0] = b[0] = 0; a[1] = b[1] = 160; a[2] = b[2] = 255;
-                }
-            continue;
-        }
-        Color tint = ColorFromHSV(fmodf((float)sprite * 57.0f, 360.0f), 0.9f, 0.9f);
-        for (int y = 0; y < 8; y++) {
-            for (int x = 0; x < 8; x++) {
-                uint8_t* out = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
-                out[0] = (uint8_t)((out[0] + 2 * tint.r) / 3);
-                out[1] = (uint8_t)((out[1] + 2 * tint.g) / 3);
-                out[2] = (uint8_t)((out[2] + 2 * tint.b) / 3);
             }
         }
     }
@@ -650,20 +578,15 @@ static void render_draw(Env* env, Rectangle dst) {
     bool obs_view = env->show_obs_view && env->agents[0].observations;
     if (obs_view) {
         const obs_t* obs = env->agents[0].observations;
-        if (env->obs_tiles)
-            obs_view_tiles(env, obs);
-        else
-            obs_view_screen(env, obs);
+        obs_view_tiles(env, obs);
         obs_view_visited(env, obs);
-        if (env->obs_tiles)
-            obs_view_sprites(env, obs);
         UpdateTexture(env->render_texture, env->render_pixels);
     } else if (env->be->frame_rgba(env->impl, env->render_pixels)) {
         UpdateTexture(env->render_texture, env->render_pixels);
     }
     DrawTexturePro(env->render_texture, (Rectangle){0, 0, (float)PK_FRAME_W, (float)PK_FRAME_H}, dst,
         (Vector2){0, 0}, 0.0f, WHITE);
-    if (obs_view && env->obs_tiles)
+    if (obs_view)
         draw_tile_ids(env, dst);
 }
 
@@ -742,7 +665,6 @@ void puf_close(Env *env) {
     free(env->prev_events);
     free(env->paid_events);
     free(env->episode.buf);
-    free(env->screen_buf);
 }
 
 void puf_log(Log *log, Dict *out) {

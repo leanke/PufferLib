@@ -4,6 +4,7 @@ vendor/gambatte-libretro/
 vendor/pokered/
 vendor/pokered-native/
 ocean/pokered/tests/
+vendor/pokerl-map-viz/
 *.md
 !README.md
 !SKILL_ISSUES.md
