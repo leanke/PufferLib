@@ -1,438 +1,558 @@
-#define PKR_ENC_C1_IC 1
-#define PKR_ENC_C1_OC 32
-#define PKR_ENC_C1_K 8
-#define PKR_ENC_C1_S 4
-#define PKR_ENC_C1_OH ((SCALED_HEIGHT - PKR_ENC_C1_K) / PKR_ENC_C1_S + 1)
-#define PKR_ENC_C1_OW ((SCALED_WIDTH - PKR_ENC_C1_K) / PKR_ENC_C1_S + 1)
-#define PKR_ENC_C1_SPATIAL (PKR_ENC_C1_OH * PKR_ENC_C1_OW)
-#define PKR_ENC_C1_COL_W (PKR_ENC_C1_IC * PKR_ENC_C1_K * PKR_ENC_C1_K)
+#define PKR_SPECIES_VOCAB 256
+#define PKR_SPECIES_EMBED 8
+#define PKR_ITEM_VOCAB 256
+#define PKR_ITEM_EMBED 4
+#define PKR_MAP_VOCAB 256
+#define PKR_MAP_EMBED 8
+#define PKR_TILESET_VOCAB 32
+#define PKR_TILESET_EMBED 4
+#define PKR_TILE_VOCAB 256
+#define PKR_TILE_EMBED 10
+#define PKR_SPRITE_VOCAB 256
+#define PKR_SPRITE_EMBED 4
+#define PKR_LEVEL_SCALE 100.0f
+#define PKR_ITEM_COUNT_SCALE 99.0f
+#define PKR_FXP_SCALE 4294967296.0
 
-#define PKR_ENC_C2_IC PKR_ENC_C1_OC
-#define PKR_ENC_C2_OC 64
-#define PKR_ENC_C2_K 3
-#define PKR_ENC_C2_S 2
-#define PKR_ENC_C2_OH ((PKR_ENC_C1_OH - PKR_ENC_C2_K) / PKR_ENC_C2_S + 1)
-#define PKR_ENC_C2_OW ((PKR_ENC_C1_OW - PKR_ENC_C2_K) / PKR_ENC_C2_S + 1)
-#define PKR_ENC_C2_SPATIAL (PKR_ENC_C2_OH * PKR_ENC_C2_OW)
-#define PKR_ENC_C2_COL_W (PKR_ENC_C2_IC * PKR_ENC_C2_K * PKR_ENC_C2_K)
+#define PKR_STATUS_BITS 5
+#define PKR_MON_FEAT (PKR_SPECIES_EMBED + 3 + PKR_STATUS_BITS)
+#define PKR_MON_SLOTS (PARTY_SIZE + 2)
+#define PKR_BAG_SLOT_FEAT (PKR_ITEM_EMBED + 3)
+#define PKR_HM_BITS 5
 
-#define PKR_ENC_CONV_FLAT (PKR_ENC_C2_OC * PKR_ENC_C2_SPATIAL)
+#define PKR_INFO_IN (PKR_MAP_EMBED + PKR_TILESET_EMBED + 8 + FACING_COUNT)
+#define PKR_BATTLE_IN 40
+#define PKR_PARTY_IN (PARTY_SIZE * PKR_MON_FEAT)
+#define PKR_BAG_IN 176
+#define PKR_VISITED_IN 96
 
-#define PKR_ENC_POSITION_IN POSITION_SCALAR_OBS
-#define PKR_ENC_POSITION_HIDDEN 8
+#define PKR_IN_INFO 0
+#define PKR_IN_BATTLE (PKR_IN_INFO + PKR_INFO_IN)
+#define PKR_IN_PARTY (PKR_IN_BATTLE + PKR_BATTLE_IN)
+#define PKR_IN_BAG (PKR_IN_PARTY + PKR_PARTY_IN)
+#define PKR_IN_VISITED (PKR_IN_BAG + PKR_BAG_IN)
 
-#define PKR_ENC_BATTLE_IN BATTLE_OBS
-#define PKR_ENC_BATTLE_HIDDEN 24
+#define PKR_INFO_HIDDEN 32
+#define PKR_BATTLE_HIDDEN 32
+#define PKR_PARTY_HIDDEN 64
+#define PKR_BAG_HIDDEN 32
+#define PKR_VISITED_HIDDEN 8
 
-#define PKR_ENC_PROGRESS_IN PROGRESS_OBS
-#define PKR_ENC_PROGRESS_HIDDEN 24
+#define PKR_OUT_INFO 0
+#define PKR_OUT_BATTLE (PKR_OUT_INFO + PKR_INFO_HIDDEN)
+#define PKR_OUT_PARTY (PKR_OUT_BATTLE + PKR_BATTLE_HIDDEN)
+#define PKR_OUT_BAG (PKR_OUT_PARTY + PKR_PARTY_HIDDEN)
+#define PKR_OUT_VISITED (PKR_OUT_BAG + PKR_BAG_HIDDEN)
 
-#define PKR_ENC_VISITED_IN VISITED_MASK_OBS
-#define PKR_ENC_VISITED_HIDDEN 8
+#define PKR_TL_IC 16
+#define PKR_TL_CH_SPRITE PKR_TILE_EMBED
+#define PKR_TL_CH_VISITED (PKR_TILE_EMBED + PKR_SPRITE_EMBED)
+#define PKR_TL_CH_WALKABLE (PKR_TL_CH_VISITED + 1)
+#define PKR_TL_GRAD_CH (PKR_TILE_EMBED + PKR_SPRITE_EMBED)
+#define PKR_TL_DX_STRIDE 16
+#define PKR_TL_H PK_TILE_MAP_H
+#define PKR_TL_W PK_TILE_MAP_W
+#define PKR_TL_K1 3
+#define PKR_TL_S1 1
+#define PKR_TL_OH1 ((PKR_TL_H - PKR_TL_K1) / PKR_TL_S1 + 1)
+#define PKR_TL_OW1 ((PKR_TL_W - PKR_TL_K1) / PKR_TL_S1 + 1)
 
-#define PKR_PARTY_SPECIES_VOCAB 256
-#define PKR_PARTY_SPECIES_EMBED_DIM 8
-#define PKR_MOVE_VOCAB 256
-#define PKR_MOVE_EMBED_DIM 4
-#define PKR_PARTY_LEVEL_SCALE 100.0f
-#define PKR_PARTY_HP_SCALE 1024.0f
-#define PKR_PARTY_RAW_SCALARS 3
-#define PKR_PARTY_SLOT_IN (PKR_PARTY_SPECIES_EMBED_DIM + 4 * PKR_MOVE_EMBED_DIM + \
-    PKR_PARTY_RAW_SCALARS)
-#define PKR_PARTY_MLP_IN (PARTY_SIZE * PKR_PARTY_SLOT_IN)
-#define PKR_PARTY_HIDDEN 56
+#define PKR_SC_H SCALED_HEIGHT
+#define PKR_SC_W SCALED_WIDTH
+#define PKR_SC_K1 8
+#define PKR_SC_S1 4
+#define PKR_SC_OH1 ((PKR_SC_H - PKR_SC_K1) / PKR_SC_S1 + 1)
+#define PKR_SC_OW1 ((PKR_SC_W - PKR_SC_K1) / PKR_SC_S1 + 1)
 
-#define PKR_GATE_BRANCHES 5
+#define PKR_C1_OC 32
+#define PKR_C2_OC 64
+#define PKR_C2_K 3
+#define PKR_C2_S 2
 
-#define PKR_ENC_CONCAT (PKR_ENC_CONV_FLAT + PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + \
-    PKR_ENC_PROGRESS_HIDDEN + PKR_PARTY_HIDDEN + PKR_ENC_VISITED_HIDDEN)
+#define PKR_INDEX_PER_ROW (PKR_MON_SLOTS + BAG_SLOTS + 2)
 
-__global__ void pkr_c1_im2col(
-        const precision_t* __restrict__ obs, precision_t* __restrict__ col,
-        int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_C1_SPATIAL * PKR_ENC_C1_COL_W) {
-        return;
+static_assert(PKR_BATTLE_IN >= BATTLE_TYPE_COUNT + 2 * PKR_MON_FEAT, "battle input too small");
+static_assert(PKR_BAG_IN >= BAG_SLOTS * PKR_BAG_SLOT_FEAT + PARTY_SIZE * PKR_HM_BITS, "bag input too small");
+static_assert(PKR_VISITED_IN >= VISITED_MASK_OBS, "visited input too small");
+static_assert(PKR_TL_CH_WALKABLE + 1 == PKR_TL_IC, "tile channel layout");
+
+struct PkrConvDims {
+    int ic, ih, iw;
+    int k1, s1, oh1, ow1;
+    int oh2, ow2;
+    int sp1() const { return oh1 * ow1; }
+    int colw1() const { return ic * k1 * k1; }
+    int sp2() const { return oh2 * ow2; }
+    int colw2() const { return PKR_C1_OC * PKR_C2_K * PKR_C2_K; }
+    int flat() const { return PKR_C2_OC * sp2(); }
+};
+
+static PkrConvDims pkr_dims(int tiles) {
+    PkrConvDims d;
+    if (tiles) {
+        d.ic = PKR_TL_IC; d.ih = PKR_TL_H; d.iw = PKR_TL_W; d.k1 = PKR_TL_K1; d.s1 = PKR_TL_S1;
+    } else {
+        d.ic = 1; d.ih = PKR_SC_H; d.iw = PKR_SC_W; d.k1 = PKR_SC_K1; d.s1 = PKR_SC_S1;
     }
-    int row = idx / PKR_ENC_C1_COL_W;
-    int c = idx % PKR_ENC_C1_COL_W;
-    int b = row / PKR_ENC_C1_SPATIAL;
-    int rem = row % PKR_ENC_C1_SPATIAL;
-    int oh = rem / PKR_ENC_C1_OW;
-    int ow = rem % PKR_ENC_C1_OW;
-    int ic = c / (PKR_ENC_C1_K * PKR_ENC_C1_K);
-    int kk = c % (PKR_ENC_C1_K * PKR_ENC_C1_K);
-    int kh = kk / PKR_ENC_C1_K;
-    int kw = kk % PKR_ENC_C1_K;
-    int ih = oh * PKR_ENC_C1_S + kh;
-    int iw = ow * PKR_ENC_C1_S + kw;
-    float raw = to_float(obs[(int64_t)b * obs_size + ic * SCALED_PIXELS + ih * SCALED_WIDTH + iw]);
-    col[idx] = from_float(raw / 255.0f);
+    d.oh1 = (d.ih - d.k1) / d.s1 + 1; d.ow1 = (d.iw - d.k1) / d.s1 + 1;
+    d.oh2 = (d.oh1 - PKR_C2_K) / PKR_C2_S + 1; d.ow2 = (d.ow1 - PKR_C2_K) / PKR_C2_S + 1;
+    return d;
 }
 
-__global__ void pkr_c2_im2col(
-        const precision_t* __restrict__ input, precision_t* __restrict__ col, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_C2_SPATIAL * PKR_ENC_C2_COL_W) {
-        return;
-    }
-    int row = idx / PKR_ENC_C2_COL_W;
-    int c = idx % PKR_ENC_C2_COL_W;
-    int b = row / PKR_ENC_C2_SPATIAL;
-    int rem = row % PKR_ENC_C2_SPATIAL;
-    int oh = rem / PKR_ENC_C2_OW;
-    int ow = rem % PKR_ENC_C2_OW;
-    int ic = c / (PKR_ENC_C2_K * PKR_ENC_C2_K);
-    int kk = c % (PKR_ENC_C2_K * PKR_ENC_C2_K);
-    int kh = kk / PKR_ENC_C2_K;
-    int kw = kk % PKR_ENC_C2_K;
-    int ih = oh * PKR_ENC_C2_S + kh;
-    int iw = ow * PKR_ENC_C2_S + kw;
-    col[idx] = input[((int64_t)b * PKR_ENC_C2_IC + ic) * PKR_ENC_C1_SPATIAL
-        + ih * PKR_ENC_C1_OW + iw];
+static void pkr_gemm(bool ta, bool tb, int M, int N, int K, const precision_t* A, int lda,
+        const precision_t* B, int ldb, precision_t* C, int ldc, float beta, cudaStream_t stream) {
+    float alpha = 1.0f;
+    puf_cublas_set_stream(g_cublas_handle, stream);
+    cublasGemmEx(g_cublas_handle, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N,
+        N, M, K, &alpha, B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
+        C, CUBLAS_PRECISION, ldc, CUBLAS_COMPUTE, CUBLAS_GEMM_DEFAULT);
 }
 
-__global__ void pkr_c2_col2im(
-        const precision_t* __restrict__ col_grad, precision_t* __restrict__ grad_input,
-        int B) {
+__device__ __forceinline__ int pkr_clamp_id(float v, int vocab) {
+    int i = (int)(v + 0.5f);
+    i = i < 0 ? 0 : i;
+    return i >= vocab ? vocab - 1 : i;
+}
+
+__device__ __forceinline__ int pkr_mon_obs_offset(int slot) {
+    if (slot < PARTY_SIZE) return PARTY_OBS_OFFSET + slot * MON_FIELDS;
+    return BATTLE_OBS_OFFSET + (slot == PARTY_SIZE ? BATTLE_PLAYER_MON_OFFSET : BATTLE_ENEMY_MON_OFFSET);
+}
+
+__global__ void pkr_index_kernel(
+        const precision_t* __restrict__ obs, int* __restrict__ species_idx, int* __restrict__ item_idx,
+        int* __restrict__ map_idx, int* __restrict__ tileset_idx, int* __restrict__ tile_idx,
+        int* __restrict__ sprite_idx, int B, int obs_size, int per_row) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_C2_IC * PKR_ENC_C1_SPATIAL) {
+    if (idx >= B * per_row) {
         return;
     }
-    int iw = idx % PKR_ENC_C1_OW;
-    int ih = (idx / PKR_ENC_C1_OW) % PKR_ENC_C1_OH;
-    int ic = (idx / PKR_ENC_C1_SPATIAL) % PKR_ENC_C2_IC;
-    int b = idx / (PKR_ENC_C2_IC * PKR_ENC_C1_SPATIAL);
-    float sum = 0.0f;
+    int b = idx / per_row;
+    int k = idx % per_row;
+    const precision_t* row = obs + (int64_t)b * obs_size;
+    if (k < PKR_MON_SLOTS) {
+        species_idx[b * PKR_MON_SLOTS + k] =
+            pkr_clamp_id(to_float(row[pkr_mon_obs_offset(k) + MON_SPECIES]), PKR_SPECIES_VOCAB);
+        return;
+    }
+    k -= PKR_MON_SLOTS;
+    if (k < BAG_SLOTS) {
+        item_idx[b * BAG_SLOTS + k] = pkr_clamp_id(to_float(row[BAG_OBS_OFFSET + k * BAG_FIELDS + BAG_ITEM]), PKR_ITEM_VOCAB);
+        return;
+    }
+    k -= BAG_SLOTS;
+    if (k == 0) {
+        map_idx[b] = pkr_clamp_id(to_float(row[INFO_OBS_OFFSET + INFO_MAP]), PKR_MAP_VOCAB);
+        return;
+    }
+    if (k == 1) {
+        tileset_idx[b] = pkr_clamp_id(to_float(row[INFO_OBS_OFFSET + INFO_TILESET]), PKR_TILESET_VOCAB);
+        return;
+    }
+    k -= 2;
+    if (k < PK_TILE_MAP_CELLS) {
+        tile_idx[b * PK_TILE_MAP_CELLS + k] = pkr_clamp_id(to_float(row[TILE_OBS_OFFSET + k]), PKR_TILE_VOCAB);
+        return;
+    }
+    k -= PK_TILE_MAP_CELLS;
+    int sp = pkr_clamp_id(to_float(row[SPRITE_OBS_OFFSET + k]), PKR_SPRITE_VOCAB);
+    sprite_idx[b * PK_TILE_MAP_CELLS + k] = sp ? sp : -1;
+}
+
+__device__ __forceinline__ float pkr_mon_feature(
+        const precision_t* __restrict__ row, const precision_t* __restrict__ species_w,
+        const int* __restrict__ species_idx, int b, int slot, int f) {
+    if (f < PKR_SPECIES_EMBED) {
+        return to_float(species_w[species_idx[b * PKR_MON_SLOTS + slot] * PKR_SPECIES_EMBED + f]);
+    }
+    int off = pkr_mon_obs_offset(slot);
+    f -= PKR_SPECIES_EMBED;
+    if (f == 0) return to_float(row[off + MON_LEVEL]) / PKR_LEVEL_SCALE;
+    if (f == 1) return to_float(row[off + MON_HP]) / PK_OBS_HP_SCALE;
+    if (f == 2) return to_float(row[off + MON_PP]) / PK_OBS_HP_SCALE;
+    int st = (int)(to_float(row[off + MON_STATUS]) + 0.5f);
+    if (f == 3) return (st & PKRED_STATUS_SLP_MASK) ? 1.0f : 0.0f;
+    return ((st >> (PKRED_STATUS_PSN_BIT + f - 4)) & 1) ? 1.0f : 0.0f;
+}
+
+struct PkrTailArgs {
+    const precision_t* obs;
+    const precision_t* species_w;
+    const precision_t* item_w;
+    const precision_t* map_w;
+    const precision_t* tileset_w;
+    const int* species_idx;
+    const int* item_idx;
+    const int* map_idx;
+    const int* tileset_idx;
+    precision_t* out;
+    int B, obs_size, width;
+};
+
+__global__ void pkr_tail_gather_kernel(PkrTailArgs a) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= a.B * a.width) {
+        return;
+    }
+    int b = idx / a.width;
+    int c = idx % a.width;
+    const precision_t* row = a.obs + (int64_t)b * a.obs_size;
+    float v = 0.0f;
+    if (c < PKR_IN_BATTLE) {
+        if (c < PKR_MAP_EMBED) {
+            v = to_float(a.map_w[a.map_idx[b] * PKR_MAP_EMBED + c]);
+        } else if ((c -= PKR_MAP_EMBED) < PKR_TILESET_EMBED) {
+            v = to_float(a.tileset_w[a.tileset_idx[b] * PKR_TILESET_EMBED + c]);
+        } else if ((c -= PKR_TILESET_EMBED) < 8) {
+            v = ((int)(to_float(row[INFO_OBS_OFFSET + INFO_BADGES]) + 0.5f) >> c) & 1 ? 1.0f : 0.0f;
+        } else {
+            v = pkr_clamp_id(to_float(row[INFO_OBS_OFFSET + INFO_FACING]), FACING_COUNT) == c - 8 ? 1.0f : 0.0f;
+        }
+    } else if (c < PKR_IN_PARTY) {
+        c -= PKR_IN_BATTLE;
+        if (c < BATTLE_TYPE_COUNT) {
+            v = pkr_clamp_id(to_float(row[BATTLE_OBS_OFFSET]), BATTLE_TYPE_COUNT) == c ? 1.0f : 0.0f;
+        } else if ((c -= BATTLE_TYPE_COUNT) < 2 * PKR_MON_FEAT) {
+            v = pkr_mon_feature(row, a.species_w, a.species_idx, b, PARTY_SIZE + c / PKR_MON_FEAT, c % PKR_MON_FEAT);
+        }
+    } else if (c < PKR_IN_BAG) {
+        c -= PKR_IN_PARTY;
+        v = pkr_mon_feature(row, a.species_w, a.species_idx, b, c / PKR_MON_FEAT, c % PKR_MON_FEAT);
+    } else if (c < PKR_IN_VISITED) {
+        c -= PKR_IN_BAG;
+        int s = c / PKR_BAG_SLOT_FEAT, f = c % PKR_BAG_SLOT_FEAT;
+        if (s < BAG_SLOTS) {
+            const precision_t* slot = row + BAG_OBS_OFFSET + s * BAG_FIELDS;
+            if (f < PKR_ITEM_EMBED) {
+                v = to_float(a.item_w[a.item_idx[b * BAG_SLOTS + s] * PKR_ITEM_EMBED + f]);
+            } else if ((f -= PKR_ITEM_EMBED) == 0) {
+                v = to_float(slot[BAG_COUNT]) / PKR_ITEM_COUNT_SCALE;
+            } else {
+                v = to_float(slot[f == 1 ? BAG_USABLE : BAG_CURSOR]);
+            }
+        } else if ((c -= BAG_SLOTS * PKR_BAG_SLOT_FEAT) < PARTY_SIZE * PKR_HM_BITS) {
+            int mask = (int)(to_float(row[BAG_OBS_OFFSET + BAG_HM_LEARNABLE + c / PKR_HM_BITS]) + 0.5f);
+            v = (mask >> (c % PKR_HM_BITS)) & 1 ? 1.0f : 0.0f;
+        }
+    } else {
+        c -= PKR_IN_VISITED;
+        if (c < VISITED_MASK_OBS) {
+            v = to_float(row[VISITED_MASK_OFFSET + c]);
+        }
+    }
+    a.out[idx] = from_float(v);
+}
+
+__global__ void pkr_screen_col1_kernel(
+        const precision_t* __restrict__ obs, precision_t* __restrict__ col, int B, int obs_size) {
+    constexpr int COLW = PKR_SC_K1 * PKR_SC_K1;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * PKR_SC_OH1 * PKR_SC_OW1 * COLW) {
+        return;
+    }
+    int c = idx % COLW;
+    int row = idx / COLW;
+    int ow = row % PKR_SC_OW1;
+    int oh = (row / PKR_SC_OW1) % PKR_SC_OH1;
+    int b = row / (PKR_SC_OH1 * PKR_SC_OW1);
+    int ih = oh * PKR_SC_S1 + c / PKR_SC_K1;
+    int iw = ow * PKR_SC_S1 + c % PKR_SC_K1;
+    col[idx] = from_float(to_float(obs[(int64_t)b * obs_size + SCREEN_OBS_OFFSET + ih * PKR_SC_W + iw]) / 255.0f);
+}
+
+constexpr int PKR_VEC = 16 / sizeof(precision_t);
+
+__global__ void pkr_tiles_col1_kernel(
+        const precision_t* __restrict__ obs, const precision_t* __restrict__ tile_w,
+        const precision_t* __restrict__ sprite_w, const int* __restrict__ tile_idx,
+        const int* __restrict__ sprite_idx, precision_t* __restrict__ col, int B, int obs_size) {
+    constexpr int TAPS = PKR_TL_K1 * PKR_TL_K1;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * PKR_TL_OH1 * PKR_TL_OW1 * TAPS) {
+        return;
+    }
+    int tap = idx % TAPS;
+    int row = idx / TAPS;
+    int ow = row % PKR_TL_OW1;
+    int oh = (row / PKR_TL_OW1) % PKR_TL_OH1;
+    int b = row / (PKR_TL_OH1 * PKR_TL_OW1);
+    int ih = oh * PKR_TL_S1 + tap / PKR_TL_K1;
+    int iw = ow * PKR_TL_S1 + tap % PKR_TL_K1;
+    int cell = ih * PKR_TL_W + iw;
+    const precision_t* r = obs + (int64_t)b * obs_size;
+    __align__(16) precision_t v[PKR_TL_IC];
+    const precision_t* te = tile_w + tile_idx[b * PK_TILE_MAP_CELLS + cell] * PKR_TILE_EMBED;
 #pragma unroll
-    for (int kh = 0; kh < PKR_ENC_C2_K; kh++) {
+    for (int c = 0; c < PKR_TILE_EMBED; c++) {
+        v[c] = te[c];
+    }
+    int sp = sprite_idx[b * PK_TILE_MAP_CELLS + cell];
+#pragma unroll
+    for (int c = 0; c < PKR_SPRITE_EMBED; c++) {
+        v[PKR_TL_CH_SPRITE + c] = sp >= 0 ? sprite_w[sp * PKR_SPRITE_EMBED + c] : from_float(0.0f);
+    }
+    v[PKR_TL_CH_VISITED] = r[VISITED_MASK_OFFSET + (ih / 2) * BLOCKS_WIDE + iw / 2];
+    v[PKR_TL_CH_WALKABLE] = r[WALKABLE_OBS_OFFSET + cell];
+    uint4* dst = (uint4*)(col + (int64_t)idx * PKR_TL_IC);
+    const uint4* src = (const uint4*)v;
+#pragma unroll
+    for (int i = 0; i < PKR_TL_IC / PKR_VEC; i++) {
+        dst[i] = src[i];
+    }
+}
+
+template <int IC, int IH, int IW, int K, int S, int OH, int OW>
+__global__ void pkr_im2col_relu_nhwc(const precision_t* __restrict__ input, precision_t* __restrict__ col, int B) {
+    constexpr int GROUPS = IC / PKR_VEC;
+    static_assert(IC % PKR_VEC == 0, "channel count must fill 16-byte vectors");
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * OH * OW * K * K * GROUPS) {
+        return;
+    }
+    int g = idx % GROUPS;
+    int tap = (idx / GROUPS) % (K * K);
+    int row = idx / (GROUPS * K * K);
+    int ow = row % OW;
+    int oh = (row / OW) % OH;
+    int b = row / (OH * OW);
+    int ih = oh * S + tap / K;
+    int iw = ow * S + tap % K;
+    uint4 raw = ((const uint4*)(input + ((int64_t)(b * IH + ih) * IW + iw) * IC))[g];
+    precision_t* v = (precision_t*)&raw;
+#pragma unroll
+    for (int i = 0; i < PKR_VEC; i++) {
+        v[i] = to_float(v[i]) > 0.0f ? v[i] : from_float(0.0f);
+    }
+    ((uint4*)col)[idx] = raw;
+}
+
+template <int IC, int IH, int IW, int K, int S, int OH, int OW>
+__global__ void pkr_col2im_nhwc(const precision_t* __restrict__ col, precision_t* __restrict__ grad_input, int B) {
+    constexpr int COLW = IC * K * K;
+    constexpr int GROUPS = IC / PKR_VEC;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * IH * IW * GROUPS) {
+        return;
+    }
+    int g = idx % GROUPS;
+    int iw = (idx / GROUPS) % IW;
+    int ih = (idx / (GROUPS * IW)) % IH;
+    int b = idx / (GROUPS * IW * IH);
+    float sum[PKR_VEC];
+#pragma unroll
+    for (int i = 0; i < PKR_VEC; i++) {
+        sum[i] = 0.0f;
+    }
+#pragma unroll
+    for (int kh = 0; kh < K; kh++) {
         int oh_num = ih - kh;
-        if (oh_num < 0 || oh_num % PKR_ENC_C2_S != 0) {
-            continue;
-        }
-        int oh = oh_num / PKR_ENC_C2_S;
-        if (oh >= PKR_ENC_C2_OH) {
+        if (oh_num < 0 || oh_num % S != 0 || oh_num / S >= OH) {
             continue;
         }
 #pragma unroll
-        for (int kw = 0; kw < PKR_ENC_C2_K; kw++) {
+        for (int kw = 0; kw < K; kw++) {
             int ow_num = iw - kw;
-            if (ow_num < 0 || ow_num % PKR_ENC_C2_S != 0) {
+            if (ow_num < 0 || ow_num % S != 0 || ow_num / S >= OW) {
                 continue;
             }
-            int ow = ow_num / PKR_ENC_C2_S;
-            if (ow >= PKR_ENC_C2_OW) {
-                continue;
-            }
-            int row = b * PKR_ENC_C2_SPATIAL + oh * PKR_ENC_C2_OW + ow;
-            int c = ic * (PKR_ENC_C2_K * PKR_ENC_C2_K) + kh * PKR_ENC_C2_K + kw;
-            sum += to_float(col_grad[(int64_t)row * PKR_ENC_C2_COL_W + c]);
-        }
-    }
-    grad_input[idx] = from_float(sum);
-}
-
-__global__ void pkr_rows_to_nchw(
-        const precision_t* __restrict__ src, precision_t* __restrict__ dst,
-        int B, int OC, int spatial, int relu) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * OC * spatial) {
-        return;
-    }
-    int b = idx / (OC * spatial);
-    int oc = (idx / spatial) % OC;
-    int s = idx % spatial;
-    float value = to_float(src[(b * spatial + s) * OC + oc]);
-    if (relu) {
-        value = fmaxf(0.0f, value);
-    }
-    dst[idx] = from_float(value);
-}
-
-__global__ void pkr_nchw_to_rows(
-        const precision_t* __restrict__ src, precision_t* __restrict__ dst,
-        int B, int OC, int spatial) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * OC * spatial) {
-        return;
-    }
-    int b = idx / (OC * spatial);
-    int oc = (idx / spatial) % OC;
-    int s = idx % spatial;
-    dst[(b * spatial + s) * OC + oc] = src[idx];
-}
-
-__global__ void pkr_gather_range_kernel(
-        const precision_t* __restrict__ obs, precision_t* __restrict__ out,
-        int B, int obs_size, int offset, int len) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * len) {
-        return;
-    }
-    int b = idx / len;
-    int f = idx % len;
-    out[idx] = obs[(int64_t)b * obs_size + offset + f];
-}
-
-__global__ void pkr_party_species_kernel(
-        const precision_t* __restrict__ obs, int* __restrict__ species_idx,
-        int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PARTY_SIZE) {
-        return;
-    }
-    int b = idx / PARTY_SIZE;
-    int s = idx % PARTY_SIZE;
-    float id = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
-        + s * PARTY_FIELDS + 0]);
-    int v = (int)(id + 0.5f);
-    v = v < 0 ? 0 : v;
-    species_idx[idx] = v >= PKR_PARTY_SPECIES_VOCAB ? PKR_PARTY_SPECIES_VOCAB - 1 : v;
-}
-
-__global__ void pkr_party_move_idx_kernel(
-        const precision_t* __restrict__ obs, int* __restrict__ move_idx,
-        int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PARTY_SIZE * 4) {
-        return;
-    }
-    int b = idx / (PARTY_SIZE * 4);
-    int rem = idx % (PARTY_SIZE * 4);
-    int s = rem / 4;
-    int mslot = rem % 4;
-    float mv = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
-        + s * PARTY_FIELDS + 4 + mslot]);
-    int v = (int)(mv + 0.5f);
-    v = v < 0 ? 0 : v;
-    move_idx[idx] = v >= PKR_MOVE_VOCAB ? PKR_MOVE_VOCAB - 1 : v;
-}
-
-__global__ void pkr_party_gather_kernel(
-        const precision_t* __restrict__ obs,
-        const precision_t* __restrict__ species_embed_w,
-        const precision_t* __restrict__ move_embed_w,
-        const int* __restrict__ species_idx, const int* __restrict__ move_idx,
-        precision_t* __restrict__ out, int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_PARTY_MLP_IN) {
-        return;
-    }
-    int b = idx / PKR_PARTY_MLP_IN;
-    int rem = idx % PKR_PARTY_MLP_IN;
-    int s = rem / PKR_PARTY_SLOT_IN;
-    int f = rem % PKR_PARTY_SLOT_IN;
-
-    if (f < PKR_PARTY_SPECIES_EMBED_DIM) {
-        int v = species_idx[b * PARTY_SIZE + s];
-        out[idx] = species_embed_w[v * PKR_PARTY_SPECIES_EMBED_DIM + f];
-        return;
-    }
-    int f2 = f - PKR_PARTY_SPECIES_EMBED_DIM;
-    if (f2 < 4 * PKR_MOVE_EMBED_DIM) {
-        int mslot = f2 / PKR_MOVE_EMBED_DIM;
-        int e = f2 % PKR_MOVE_EMBED_DIM;
-        int v = move_idx[(b * PARTY_SIZE + s) * 4 + mslot];
-        out[idx] = move_embed_w[v * PKR_MOVE_EMBED_DIM + e];
-        return;
-    }
-    int field3 = f2 - 4 * PKR_MOVE_EMBED_DIM;
-    int obs_field = 1 + field3;
-    float scale = field3 == 0 ? PKR_PARTY_LEVEL_SCALE : PKR_PARTY_HP_SCALE;
-    float raw = to_float(obs[(int64_t)b * obs_size + PARTY_OBS_OFFSET
-        + s * PARTY_FIELDS + obs_field]);
-    out[idx] = from_float(raw / scale);
-}
-
-__global__ void pkr_concat_kernel(
-        precision_t* __restrict__ out, const precision_t* __restrict__ conv_flat,
-        const precision_t* __restrict__ position_hidden,
-        const precision_t* __restrict__ battle_hidden,
-        const precision_t* __restrict__ progress_hidden,
-        const precision_t* __restrict__ party_hidden,
-        const precision_t* __restrict__ visited_hidden, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_CONCAT) {
-        return;
-    }
-    int b = idx / PKR_ENC_CONCAT;
-    int c = idx % PKR_ENC_CONCAT;
-    if (c < PKR_ENC_CONV_FLAT) { out[idx] = conv_flat[b * PKR_ENC_CONV_FLAT + c]; return; }
-    c -= PKR_ENC_CONV_FLAT;
-    if (c < PKR_ENC_POSITION_HIDDEN) { out[idx] = position_hidden[b * PKR_ENC_POSITION_HIDDEN + c]; return; }
-    c -= PKR_ENC_POSITION_HIDDEN;
-    if (c < PKR_ENC_BATTLE_HIDDEN) { out[idx] = battle_hidden[b * PKR_ENC_BATTLE_HIDDEN + c]; return; }
-    c -= PKR_ENC_BATTLE_HIDDEN;
-    if (c < PKR_ENC_PROGRESS_HIDDEN) { out[idx] = progress_hidden[b * PKR_ENC_PROGRESS_HIDDEN + c]; return; }
-    c -= PKR_ENC_PROGRESS_HIDDEN;
-    if (c < PKR_PARTY_HIDDEN) { out[idx] = party_hidden[b * PKR_PARTY_HIDDEN + c]; return; }
-    c -= PKR_PARTY_HIDDEN;
-    out[idx] = visited_hidden[b * PKR_ENC_VISITED_HIDDEN + c];
-}
-
-__device__ __forceinline__ int pkr_gate_branch_of(int off) {
-    if (off < PKR_ENC_POSITION_HIDDEN) return 0;
-    off -= PKR_ENC_POSITION_HIDDEN;
-    if (off < PKR_ENC_BATTLE_HIDDEN) return 1;
-    off -= PKR_ENC_BATTLE_HIDDEN;
-    if (off < PKR_ENC_PROGRESS_HIDDEN) return 2;
-    off -= PKR_ENC_PROGRESS_HIDDEN;
-    if (off < PKR_PARTY_HIDDEN) return 3;
-    off -= PKR_PARTY_HIDDEN;
-    return 4;
-}
-
-__global__ void pkr_gate_kernel(
-        const precision_t* __restrict__ obs, const precision_t* __restrict__ gate_w,
-        const precision_t* __restrict__ gate_b, precision_t* __restrict__ gate_out,
-        precision_t* __restrict__ gate_x, int B, int obs_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_GATE_BRANCHES) {
-        return;
-    }
-    int b = idx / PKR_GATE_BRANCHES;
-    int c = idx % PKR_GATE_BRANCHES;
-    float x = to_float(obs[(int64_t)b * obs_size + BATTLE_OBS_OFFSET + 0]);
-    if (c == 0) {
-        gate_x[b] = from_float(x);
-    }
-    float z = to_float(gate_w[c]) * x + to_float(gate_b[c]);
-    gate_out[idx] = from_float(sigmoid(z));
-}
-
-__global__ void pkr_gate_apply_kernel(
-        precision_t* __restrict__ concat_gated, const precision_t* __restrict__ concat_raw,
-        const precision_t* __restrict__ gate, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_CONCAT) {
-        return;
-    }
-    int b = idx / PKR_ENC_CONCAT;
-    int c = idx % PKR_ENC_CONCAT;
-    if (c < PKR_ENC_CONV_FLAT) { concat_gated[idx] = concat_raw[idx]; return; }
-    int branch = pkr_gate_branch_of(c - PKR_ENC_CONV_FLAT);
-    float g = to_float(gate[b * PKR_GATE_BRANCHES + branch]);
-    concat_gated[idx] = from_float(to_float(concat_raw[idx]) * g);
-}
-
-__global__ void pkr_gate_copy_conv_grad_kernel(
-        const precision_t* __restrict__ grad_concat_gated,
-        precision_t* __restrict__ conv_grad, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_ENC_CONV_FLAT) {
-        return;
-    }
-    int b = idx / PKR_ENC_CONV_FLAT;
-    int c = idx % PKR_ENC_CONV_FLAT;
-    conv_grad[idx] = grad_concat_gated[b * PKR_ENC_CONCAT + c];
-}
-
-__global__ void pkr_gate_backward_kernel(
-        const precision_t* __restrict__ grad_concat_gated,
-        const precision_t* __restrict__ concat_raw,
-        const precision_t* __restrict__ gate,
-        precision_t* __restrict__ position_grad,
-        precision_t* __restrict__ battle_grad,
-        precision_t* __restrict__ progress_grad,
-        precision_t* __restrict__ party_grad,
-        precision_t* __restrict__ visited_grad,
-        precision_t* __restrict__ gate_dz,
-        int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * PKR_GATE_BRANCHES) {
-        return;
-    }
-    int b = idx / PKR_GATE_BRANCHES;
-    int c = idx % PKR_GATE_BRANCHES;
-    int off0, len;
-    precision_t* branch_grad;
-    switch (c) {
-        case 0: off0 = 0; len = PKR_ENC_POSITION_HIDDEN; branch_grad = position_grad; break;
-        case 1: off0 = PKR_ENC_POSITION_HIDDEN; len = PKR_ENC_BATTLE_HIDDEN; branch_grad = battle_grad; break;
-        case 2: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN;
-                len = PKR_ENC_PROGRESS_HIDDEN; branch_grad = progress_grad; break;
-        case 3: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + PKR_ENC_PROGRESS_HIDDEN;
-                len = PKR_PARTY_HIDDEN; branch_grad = party_grad; break;
-        default: off0 = PKR_ENC_POSITION_HIDDEN + PKR_ENC_BATTLE_HIDDEN + PKR_ENC_PROGRESS_HIDDEN +
-                PKR_PARTY_HIDDEN;
-                len = PKR_ENC_VISITED_HIDDEN; branch_grad = visited_grad; break;
-    }
-    float g = to_float(gate[idx]);
-    float dsum = 0.0f;
-    for (int i = 0; i < len; i++) {
-        int gi = b * PKR_ENC_CONCAT + PKR_ENC_CONV_FLAT + off0 + i;
-        float gc = to_float(grad_concat_gated[gi]);
-        float craw = to_float(concat_raw[gi]);
-        branch_grad[b * len + i] = from_float(gc * g);
-        dsum += gc * craw;
-    }
-    gate_dz[idx] = from_float(dsum * g * (1.0f - g));
-}
-
-__global__ void pkr_gate_wgrad_kernel(
-        const precision_t* __restrict__ gate_dz, const precision_t* __restrict__ gate_x,
-        precision_t* __restrict__ gate_w_grad, precision_t* __restrict__ gate_b_grad,
-        int B) {
-    int c = blockIdx.x * blockDim.x + threadIdx.x;
-    if (c >= PKR_GATE_BRANCHES) {
-        return;
-    }
-    float wg = 0.0f, bg = 0.0f;
-    for (int b = 0; b < B; b++) {
-        float dz = to_float(gate_dz[b * PKR_GATE_BRANCHES + c]);
-        float x = to_float(gate_x[b]);
-        wg += dz * x;
-        bg += dz;
-    }
-    gate_w_grad[c] = from_float(wg);
-    gate_b_grad[c] = from_float(bg);
-}
-
-__global__ void pkr_party_species_embed_wgrad_kernel(
-        precision_t* __restrict__ wgrad, const precision_t* __restrict__ grad_party_in,
-        const int* __restrict__ species_idx, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= PKR_PARTY_SPECIES_VOCAB * PKR_PARTY_SPECIES_EMBED_DIM) {
-        return;
-    }
-    int v = idx / PKR_PARTY_SPECIES_EMBED_DIM;
-    int e = idx % PKR_PARTY_SPECIES_EMBED_DIM;
-    float sum = 0.0f;
-    for (int b = 0; b < B; b++) {
-        for (int s = 0; s < PARTY_SIZE; s++) {
-            if (species_idx[b * PARTY_SIZE + s] == v) {
-                sum += to_float(grad_party_in[(b * PARTY_SIZE + s) * PKR_PARTY_SLOT_IN + e]);
+            int64_t row = (int64_t)(b * OH + oh_num / S) * OW + ow_num / S;
+            uint4 raw = ((const uint4*)(col + row * COLW + (kh * K + kw) * IC))[g];
+            const precision_t* v = (const precision_t*)&raw;
+#pragma unroll
+            for (int i = 0; i < PKR_VEC; i++) {
+                sum[i] += to_float(v[i]);
             }
         }
     }
-    wgrad[idx] = from_float(sum);
+    uint4 out;
+    precision_t* o = (precision_t*)&out;
+#pragma unroll
+    for (int i = 0; i < PKR_VEC; i++) {
+        o[i] = from_float(sum[i]);
+    }
+    ((uint4*)grad_input)[idx] = out;
 }
 
-__global__ void pkr_party_move_embed_wgrad_kernel(
-        precision_t* __restrict__ wgrad, const precision_t* __restrict__ grad_party_in,
-        const int* __restrict__ move_idx, int B) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= PKR_MOVE_VOCAB * PKR_MOVE_EMBED_DIM) {
+__global__ void pkr_tl_input_grad_kernel(
+        const precision_t* __restrict__ conv1_grad, const precision_t* __restrict__ conv1_w,
+        float* __restrict__ dx, int B) {
+    constexpr int TAPS = PKR_TL_K1 * PKR_TL_K1;
+    constexpr int COLW = PKR_TL_IC * TAPS;
+    constexpr int Q = PKR_TL_DX_STRIDE / 4;
+    __shared__ float4 w[TAPS * PKR_C1_OC * Q];
+    float* wf = (float*)w;
+    for (int i = threadIdx.x; i < TAPS * PKR_C1_OC * PKR_TL_DX_STRIDE; i += blockDim.x) {
+        int ch = i % PKR_TL_DX_STRIDE, oc = (i / PKR_TL_DX_STRIDE) % PKR_C1_OC;
+        int tap = i / (PKR_TL_DX_STRIDE * PKR_C1_OC);
+        wf[i] = ch < PKR_TL_GRAD_CH ? to_float(conv1_w[oc * COLW + tap * PKR_TL_IC + ch]) : 0.0f;
+    }
+    __syncthreads();
+    int pos = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pos >= B * PK_TILE_MAP_CELLS) {
         return;
     }
-    int v = idx / PKR_MOVE_EMBED_DIM;
-    int e = idx % PKR_MOVE_EMBED_DIM;
-    float sum = 0.0f;
-    for (int b = 0; b < B; b++) {
-        for (int s = 0; s < PARTY_SIZE; s++) {
-            for (int mslot = 0; mslot < 4; mslot++) {
-                if (move_idx[(b * PARTY_SIZE + s) * 4 + mslot] == v) {
-                    int f = PKR_PARTY_SPECIES_EMBED_DIM + mslot * PKR_MOVE_EMBED_DIM + e;
-                    sum += to_float(grad_party_in[(b * PARTY_SIZE + s) * PKR_PARTY_SLOT_IN + f]);
+    int b = pos / PK_TILE_MAP_CELLS;
+    int cell = pos % PK_TILE_MAP_CELLS;
+    int ih = cell / PKR_TL_W;
+    int iw = cell % PKR_TL_W;
+    float4 acc[Q];
+#pragma unroll
+    for (int q = 0; q < Q; q++) {
+        acc[q] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+#pragma unroll
+    for (int kh = 0; kh < PKR_TL_K1; kh++) {
+        int oh = ih - kh;
+        if (oh < 0 || oh >= PKR_TL_OH1) {
+            continue;
+        }
+#pragma unroll
+        for (int kw = 0; kw < PKR_TL_K1; kw++) {
+            int ow = iw - kw;
+            if (ow < 0 || ow >= PKR_TL_OW1) {
+                continue;
+            }
+            const float4* wt = w + (kh * PKR_TL_K1 + kw) * PKR_C1_OC * Q;
+            const uint4* dyv = (const uint4*)(conv1_grad + ((int64_t)(b * PKR_TL_OH1 + oh) * PKR_TL_OW1 + ow) * PKR_C1_OC);
+#pragma unroll
+            for (int gi = 0; gi < PKR_C1_OC / PKR_VEC; gi++) {
+                uint4 raw = dyv[gi];
+                const precision_t* dy = (const precision_t*)&raw;
+#pragma unroll
+                for (int j = 0; j < PKR_VEC; j++) {
+                    float d = to_float(dy[j]);
+                    const float4* wo = wt + (gi * PKR_VEC + j) * Q;
+#pragma unroll
+                    for (int q = 0; q < Q; q++) {
+                        float4 c = wo[q];
+                        acc[q].x += d * c.x; acc[q].y += d * c.y; acc[q].z += d * c.z; acc[q].w += d * c.w;
+                    }
                 }
             }
         }
     }
-    wgrad[idx] = from_float(sum);
+    float4* out = (float4*)(dx + (int64_t)pos * PKR_TL_DX_STRIDE);
+#pragma unroll
+    for (int q = 0; q < Q; q++) {
+        out[q] = acc[q];
+    }
 }
 
-__global__ void pkr_relu_kernel(precision_t* __restrict__ data, int total) {
+__device__ __forceinline__ unsigned long long pkr_fxp(float g) {
+    return (unsigned long long)__double2ll_rn((double)g * PKR_FXP_SCALE);
+}
+
+template <int V, int E, typename GradAt>
+__global__ void pkr_embed_hist_kernel(long long* __restrict__ wgrad_i, const int* __restrict__ idx, int n,
+        GradAt grad) {
+    __shared__ long long acc[V * E];
+    for (int i = threadIdx.x; i < V * E; i += blockDim.x) {
+        acc[i] = 0;
+    }
+    __syncthreads();
+    int lane = threadIdx.x & 31;
+    int warp_base = (blockIdx.x * blockDim.x + threadIdx.x) - lane;
+    int stride = blockDim.x * gridDim.x;
+    for (int base = warp_base; base < n; base += stride) {
+        int pos = base + lane;
+        int v = pos < n ? idx[pos] : -1;
+        unsigned peers = __match_any_sync(0xffffffffu, v);
+        bool leader = lane == __ffs(peers) - 1;
+        float g[E];
+        if (v >= 0) {
+            grad(pos, g);
+        }
+        bool uniform = peers == 0xffffffffu;
+#pragma unroll
+        for (int e = 0; e < E; e++) {
+            long long mine = v >= 0 ? (long long)pkr_fxp(g[e]) : 0;
+            long long sum = 0;
+            if (uniform) {
+                sum = mine;
+#pragma unroll
+                for (int o = 16; o; o >>= 1) {
+                    sum += __shfl_xor_sync(0xffffffffu, sum, o);
+                }
+            } else {
+                for (unsigned m = peers; m; m &= m - 1) {
+                    sum += __shfl_sync(peers, mine, __ffs(m) - 1);
+                }
+            }
+            if (leader && v >= 0 && sum != 0) {
+                atomicAdd((unsigned long long*)&acc[v * E + e], (unsigned long long)sum);
+            }
+        }
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < V * E; i += blockDim.x) {
+        if (acc[i] != 0) {
+            atomicAdd((unsigned long long*)&wgrad_i[i], (unsigned long long)acc[i]);
+        }
+    }
+}
+
+struct PkrSpeciesGrad {
+    const precision_t* tail_in;
+    int width;
+    __device__ void operator()(int pos, float* g) const {
+        int b = pos / PKR_MON_SLOTS;
+        int s = pos % PKR_MON_SLOTS;
+        const precision_t* src = tail_in + (int64_t)b * width + (s < PARTY_SIZE
+            ? PKR_IN_PARTY + s * PKR_MON_FEAT
+            : PKR_IN_BATTLE + BATTLE_TYPE_COUNT + (s - PARTY_SIZE) * PKR_MON_FEAT);
+#pragma unroll
+        for (int e = 0; e < PKR_SPECIES_EMBED; e++) {
+            g[e] = to_float(src[e]);
+        }
+    }
+};
+
+template <int E>
+struct PkrSlotGrad {
+    const precision_t* tail_in;
+    int width, offset, slots, slot_stride;
+    __device__ void operator()(int pos, float* g) const {
+        const precision_t* src = tail_in + (int64_t)(pos / slots) * width + offset + (pos % slots) * slot_stride;
+#pragma unroll
+        for (int e = 0; e < E; e++) {
+            g[e] = to_float(src[e]);
+        }
+    }
+};
+
+template <int E>
+struct PkrDxGrad {
+    const float* dx;
+    int offset;
+    __device__ void operator()(int pos, float* g) const {
+#pragma unroll
+        for (int e = 0; e < E; e++) {
+            g[e] = dx[(int64_t)pos * PKR_TL_DX_STRIDE + offset + e];
+        }
+    }
+};
+
+__global__ void pkr_fxp_to_precision_kernel(
+        precision_t* __restrict__ dst, const long long* __restrict__ src, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = from_float((float)((double)src[idx] * (1.0 / PKR_FXP_SCALE)));
+    }
+}
+
+template <int V, int E, typename GradAt>
+static void pkr_embed_wgrad(Long* scratch, Prec* wgrad, const int* idx, int n, GradAt grad, cudaStream_t stream) {
+    cudaMemsetAsync(scratch->data, 0, V * E * sizeof(long long), stream);
+    int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    blocks = blocks < 1 ? 1 : blocks > 512 ? 512 : blocks;
+    pkr_embed_hist_kernel<V, E, GradAt><<<blocks, BLOCK_SIZE, 0, stream>>>(
+        (long long*)scratch->data, idx, n, grad);
+    pkr_fxp_to_precision_kernel<<<grid_size(V * E), BLOCK_SIZE, 0, stream>>>(
+        wgrad->data, (long long*)scratch->data, V * E);
+}
+
+__global__ void pkr_relu_kernel(precision_t* __restrict__ data, int64_t total) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) {
         return;
     }
@@ -440,8 +560,8 @@ __global__ void pkr_relu_kernel(precision_t* __restrict__ data, int total) {
 }
 
 __global__ void pkr_relu_backward_kernel(
-        precision_t* __restrict__ grad, const precision_t* __restrict__ out, int total) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        precision_t* __restrict__ grad, const precision_t* __restrict__ out, int64_t total) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) {
         return;
     }
@@ -450,375 +570,327 @@ __global__ void pkr_relu_backward_kernel(
     }
 }
 
+static void pkr_relu(precision_t* data, int64_t n, cudaStream_t stream) {
+    pkr_relu_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(data, n);
+}
+
+static void pkr_relu_backward(precision_t* grad, const precision_t* out, int64_t n, cudaStream_t stream) {
+    pkr_relu_backward_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(grad, out, n);
+}
+
+struct PkrBranch {
+    int in_off, in_dim, out_off, hidden;
+};
+
+static const PkrBranch PKR_BRANCHES[] = {
+    {PKR_IN_INFO, PKR_INFO_IN, PKR_OUT_INFO, PKR_INFO_HIDDEN},
+    {PKR_IN_BATTLE, PKR_BATTLE_IN, PKR_OUT_BATTLE, PKR_BATTLE_HIDDEN},
+    {PKR_IN_PARTY, PKR_PARTY_IN, PKR_OUT_PARTY, PKR_PARTY_HIDDEN},
+    {PKR_IN_BAG, PKR_BAG_IN, PKR_OUT_BAG, PKR_BAG_HIDDEN},
+    {PKR_IN_VISITED, PKR_VISITED_IN, PKR_OUT_VISITED, PKR_VISITED_HIDDEN},
+};
+#define PKR_BRANCH_VISITED 4
+
 struct PokeredEncoderWeights {
     Prec conv1_w, conv2_w;
-    Prec position_w, battle_w, progress_w, visited_w;
-    Prec party_species_embed_w, party_move_embed_w, party_w;
-    Prec gate_w, gate_b;
-    Prec proj_w;
+    Prec branch_w[5];
+    Prec species_embed_w, item_embed_w, map_embed_w, tileset_embed_w;
+    Prec tile_embed_w, sprite_embed_w;
+    Prec proj_conv_w, proj_tail_w;
     int obs_size, hidden;
+    int tiles, n_branches, tail_in, tail_out;
+    PkrConvDims d;
 };
 
 struct PokeredEncoderActivations {
-    Prec conv1_out, conv1_grad, conv1_wgrad, col1, mm1;
-    Prec conv2_out, conv2_grad, conv2_wgrad, col2, mm2;
-    Prec position_in, position_out, position_grad, position_wgrad;
-    Prec battle_in, battle_out, battle_grad, battle_wgrad;
-    Prec progress_in, progress_out, progress_grad, progress_wgrad;
-    Prec visited_in, visited_out, visited_grad, visited_wgrad;
-    Int party_species_idx, party_move_idx;
-    Prec party_in, party_out, party_grad, party_wgrad;
-    Prec party_species_embed_wgrad, party_move_embed_wgrad;
-    Prec gate_out, gate_x, gate_dz, gate_w_grad, gate_b_grad;
-    Prec concat_raw, concat, out, proj_wgrad;
+    Prec col1, mm1, conv1_grad, conv1_wgrad;
+    Prec col2, mm2, conv2_grad, conv2_wgrad;
+    Prec tail_in, tail, tail_grad;
+    Prec branch_wgrad[5];
+    Int species_idx, item_idx, map_idx, tileset_idx, tile_idx, sprite_idx;
+    Prec species_embed_wgrad, item_embed_wgrad, map_embed_wgrad, tileset_embed_wgrad;
+    Prec tile_embed_wgrad, sprite_embed_wgrad;
+    Long species_wgrad_i, item_wgrad_i, map_wgrad_i, tileset_wgrad_i, tile_wgrad_i, sprite_wgrad_i;
+    Float tile_dx;
+    Prec out, proj_conv_wgrad, proj_tail_wgrad;
 };
 
-static PokeredEncoderActivations* pkr_enc_last = NULL;
+#define PKR_TL_C2_ARGS PKR_C1_OC, PKR_TL_OH1, PKR_TL_OW1, PKR_C2_K, PKR_C2_S, \
+    (PKR_TL_OH1 - PKR_C2_K) / PKR_C2_S + 1, (PKR_TL_OW1 - PKR_C2_K) / PKR_C2_S + 1
+#define PKR_SC_C2_ARGS PKR_C1_OC, PKR_SC_OH1, PKR_SC_OW1, PKR_C2_K, PKR_C2_S, \
+    (PKR_SC_OH1 - PKR_C2_K) / PKR_C2_S + 1, (PKR_SC_OW1 - PKR_C2_K) / PKR_C2_S + 1
 
-static void pkr_conv_wgrad(
-        precision_t* grad_output_nchw, precision_t* wgrad,
-        precision_t* col_buf, precision_t* mm_buf,
-        int B, int OC, int spatial, int col_cols, cudaStream_t stream) {
-    int col_rows = B * spatial;
-    pkr_nchw_to_rows<<<grid_size(B * OC * spatial), BLOCK_SIZE, 0, stream>>>(
-        grad_output_nchw, mm_buf, B, OC, spatial);
-    Prec mm_t = {.data = mm_buf, .shape = {col_rows, OC}};
-    Prec col_t = {.data = col_buf, .shape = {col_rows, col_cols}};
-    Prec wg_t = {.data = wgrad, .shape = {OC, col_cols}};
-    puf_mm_tn(&mm_t, &col_t, &wg_t, stream);
+static void pkr_conv_forward(PokeredEncoderWeights* ew, PokeredEncoderActivations* a,
+        const precision_t* obs, int B, cudaStream_t stream) {
+    const PkrConvDims& d = ew->d;
+    int r1 = B * d.sp1(), r2 = B * d.sp2();
+    if (ew->tiles) {
+        pkr_tiles_col1_kernel<<<grid_size((int64_t)r1 * PKR_TL_K1 * PKR_TL_K1), BLOCK_SIZE, 0, stream>>>(
+            obs, ew->tile_embed_w.data, ew->sprite_embed_w.data, a->tile_idx.data, a->sprite_idx.data,
+            a->col1.data, B, ew->obs_size);
+    } else {
+        pkr_screen_col1_kernel<<<grid_size((int64_t)r1 * d.colw1()), BLOCK_SIZE, 0, stream>>>(
+            obs, a->col1.data, B, ew->obs_size);
+    }
+    pkr_gemm(false, true, r1, PKR_C1_OC, d.colw1(), a->col1.data, d.colw1(), ew->conv1_w.data, d.colw1(),
+        a->mm1.data, PKR_C1_OC, 0.0f, stream);
+    int n2 = grid_size((int64_t)r2 * d.colw2() / PKR_VEC);
+    if (ew->tiles) {
+        pkr_im2col_relu_nhwc<PKR_TL_C2_ARGS><<<n2, BLOCK_SIZE, 0, stream>>>(a->mm1.data, a->col2.data, B);
+    } else {
+        pkr_im2col_relu_nhwc<PKR_SC_C2_ARGS><<<n2, BLOCK_SIZE, 0, stream>>>(a->mm1.data, a->col2.data, B);
+    }
+    pkr_gemm(false, true, r2, PKR_C2_OC, d.colw2(), a->col2.data, d.colw2(), ew->conv2_w.data, d.colw2(),
+        a->mm2.data, PKR_C2_OC, 0.0f, stream);
+    pkr_relu(a->mm2.data, (int64_t)r2 * PKR_C2_OC, stream);
 }
 
-static void pkr_branch_forward(
-        Prec* obs, Prec* branch_in, Prec* branch_w, Prec* branch_out,
-        int offset, int len, int hidden, int B, int obs_size, cudaStream_t stream) {
-    pkr_gather_range_kernel<<<grid_size(B * len), BLOCK_SIZE, 0, stream>>>(
-        obs->data, branch_in->data, B, obs_size, offset, len);
-    puf_mm(branch_in, branch_w, branch_out, stream);
-    pkr_relu_kernel<<<grid_size(B * hidden), BLOCK_SIZE, 0, stream>>>(branch_out->data, B * hidden);
+static void pkr_conv_backward(PokeredEncoderWeights* ew, PokeredEncoderActivations* a, int B, cudaStream_t stream) {
+    const PkrConvDims& d = ew->d;
+    int r1 = B * d.sp1(), r2 = B * d.sp2();
+    pkr_gemm(true, false, PKR_C2_OC, d.colw2(), r2, a->conv2_grad.data, PKR_C2_OC, a->col2.data, d.colw2(),
+        a->conv2_wgrad.data, d.colw2(), 0.0f, stream);
+    pkr_gemm(false, false, r2, d.colw2(), PKR_C2_OC, a->conv2_grad.data, PKR_C2_OC, ew->conv2_w.data, d.colw2(),
+        a->col2.data, d.colw2(), 0.0f, stream);
+    int n1 = grid_size((int64_t)r1 * PKR_C1_OC / PKR_VEC);
+    if (ew->tiles) {
+        pkr_col2im_nhwc<PKR_TL_C2_ARGS><<<n1, BLOCK_SIZE, 0, stream>>>(a->col2.data, a->conv1_grad.data, B);
+    } else {
+        pkr_col2im_nhwc<PKR_SC_C2_ARGS><<<n1, BLOCK_SIZE, 0, stream>>>(a->col2.data, a->conv1_grad.data, B);
+    }
+    pkr_relu_backward(a->conv1_grad.data, a->mm1.data, (int64_t)r1 * PKR_C1_OC, stream);
+    pkr_gemm(true, false, PKR_C1_OC, d.colw1(), r1, a->conv1_grad.data, PKR_C1_OC, a->col1.data, d.colw1(),
+        a->conv1_wgrad.data, d.colw1(), 0.0f, stream);
+    if (!ew->tiles) {
+        return;
+    }
+    pkr_tl_input_grad_kernel<<<grid_size(B * PK_TILE_MAP_CELLS), BLOCK_SIZE, 0, stream>>>(
+        a->conv1_grad.data, ew->conv1_w.data, a->tile_dx.data, B);
+    pkr_embed_wgrad<PKR_TILE_VOCAB, PKR_TILE_EMBED>(&a->tile_wgrad_i, &a->tile_embed_wgrad,
+        a->tile_idx.data, B * PK_TILE_MAP_CELLS, PkrDxGrad<PKR_TILE_EMBED>{a->tile_dx.data, 0}, stream);
+    pkr_embed_wgrad<PKR_SPRITE_VOCAB, PKR_SPRITE_EMBED>(&a->sprite_wgrad_i, &a->sprite_embed_wgrad,
+        a->sprite_idx.data, B * PK_TILE_MAP_CELLS,
+        PkrDxGrad<PKR_SPRITE_EMBED>{a->tile_dx.data, PKR_TL_CH_SPRITE}, stream);
 }
 
-static void pkr_branch_backward(
-        Prec* branch_grad, Prec* branch_out, Prec* branch_in, Prec* branch_wgrad,
-        int hidden, cudaStream_t stream) {
-    pkr_relu_backward_kernel<<<grid_size(branch_grad->shape[0] * hidden), BLOCK_SIZE, 0, stream>>>(
-        branch_grad->data, branch_out->data, branch_grad->shape[0] * hidden);
-    puf_mm_tn(branch_grad, branch_in, branch_wgrad, stream);
-}
-
-static Prec pokered_encoder_forward(
-        void* w, void* activations, Prec input, cudaStream_t stream) {
+static Prec pokered_encoder_forward(void* w, void* activations, Prec input, cudaStream_t stream) {
     PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
     PokeredEncoderActivations* a = (PokeredEncoderActivations*)activations;
     int B = input.shape[0];
+    int per_row = PKR_INDEX_PER_ROW + (ew->tiles ? 2 * PK_TILE_MAP_CELLS : 0);
 
-    int c1_rows = B * PKR_ENC_C1_SPATIAL;
-    pkr_c1_im2col<<<grid_size(c1_rows * PKR_ENC_C1_COL_W), BLOCK_SIZE, 0, stream>>>(
-        input.data, a->col1.data, B, ew->obs_size);
-    Prec c1_col = {.data = a->col1.data, .shape = {c1_rows, PKR_ENC_C1_COL_W}};
-    Prec c1_mm = {.data = a->mm1.data, .shape = {c1_rows, PKR_ENC_C1_OC}};
-    puf_mm(&c1_col, &ew->conv1_w, &c1_mm, stream);
-    pkr_rows_to_nchw<<<grid_size(B * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL), BLOCK_SIZE, 0,
-        stream>>>(a->mm1.data, a->conv1_out.data, B, PKR_ENC_C1_OC, PKR_ENC_C1_SPATIAL, 1);
+    pkr_index_kernel<<<grid_size(B * per_row), BLOCK_SIZE, 0, stream>>>(
+        input.data, a->species_idx.data, a->item_idx.data, a->map_idx.data, a->tileset_idx.data,
+        a->tile_idx.data, a->sprite_idx.data, B, ew->obs_size, per_row);
 
-    int c2_rows = B * PKR_ENC_C2_SPATIAL;
-    pkr_c2_im2col<<<grid_size(c2_rows * PKR_ENC_C2_COL_W), BLOCK_SIZE, 0, stream>>>(
-        a->conv1_out.data, a->col2.data, B);
-    Prec c2_col = {.data = a->col2.data, .shape = {c2_rows, PKR_ENC_C2_COL_W}};
-    Prec c2_mm = {.data = a->mm2.data, .shape = {c2_rows, PKR_ENC_C2_OC}};
-    puf_mm(&c2_col, &ew->conv2_w, &c2_mm, stream);
-    pkr_rows_to_nchw<<<grid_size(B * PKR_ENC_C2_OC * PKR_ENC_C2_SPATIAL), BLOCK_SIZE, 0,
-        stream>>>(a->mm2.data, a->conv2_out.data, B, PKR_ENC_C2_OC, PKR_ENC_C2_SPATIAL, 0);
+    pkr_conv_forward(ew, a, input.data, B, stream);
 
-    pkr_branch_forward(&input, &a->position_in, &ew->position_w, &a->position_out,
-        POSITION_OBS_OFFSET, PKR_ENC_POSITION_IN, PKR_ENC_POSITION_HIDDEN, B, ew->obs_size, stream);
-    pkr_branch_forward(&input, &a->battle_in, &ew->battle_w, &a->battle_out,
-        BATTLE_OBS_OFFSET, PKR_ENC_BATTLE_IN, PKR_ENC_BATTLE_HIDDEN, B, ew->obs_size, stream);
-    pkr_branch_forward(&input, &a->progress_in, &ew->progress_w, &a->progress_out,
-        PROGRESS_OBS_OFFSET, PKR_ENC_PROGRESS_IN, PKR_ENC_PROGRESS_HIDDEN, B, ew->obs_size, stream);
-    pkr_branch_forward(&input, &a->visited_in, &ew->visited_w, &a->visited_out,
-        VISITED_MASK_OFFSET, PKR_ENC_VISITED_IN, PKR_ENC_VISITED_HIDDEN, B, ew->obs_size, stream);
+    PkrTailArgs ta = {input.data, ew->species_embed_w.data, ew->item_embed_w.data, ew->map_embed_w.data,
+        ew->tileset_embed_w.data, a->species_idx.data, a->item_idx.data, a->map_idx.data, a->tileset_idx.data,
+        a->tail_in.data, B, ew->obs_size, ew->tail_in};
+    pkr_tail_gather_kernel<<<grid_size(B * ew->tail_in), BLOCK_SIZE, 0, stream>>>(ta);
+    for (int i = 0; i < ew->n_branches; i++) {
+        const PkrBranch& br = PKR_BRANCHES[i];
+        pkr_gemm(false, true, B, br.hidden, br.in_dim, a->tail_in.data + br.in_off, ew->tail_in,
+            ew->branch_w[i].data, br.in_dim, a->tail.data + br.out_off, ew->tail_out, 0.0f, stream);
+    }
+    pkr_relu(a->tail.data, (int64_t)B * ew->tail_out, stream);
 
-    pkr_party_species_kernel<<<grid_size(B * PARTY_SIZE), BLOCK_SIZE, 0, stream>>>(
-        input.data, a->party_species_idx.data, B, ew->obs_size);
-    pkr_party_move_idx_kernel<<<grid_size(B * PARTY_SIZE * 4), BLOCK_SIZE, 0, stream>>>(
-        input.data, a->party_move_idx.data, B, ew->obs_size);
-    pkr_party_gather_kernel<<<grid_size(B * PKR_PARTY_MLP_IN), BLOCK_SIZE, 0, stream>>>(
-        input.data, ew->party_species_embed_w.data, ew->party_move_embed_w.data,
-        a->party_species_idx.data, a->party_move_idx.data,
-        a->party_in.data, B, ew->obs_size);
-    puf_mm(&a->party_in, &ew->party_w, &a->party_out, stream);
-    pkr_relu_kernel<<<grid_size(B * PKR_PARTY_HIDDEN), BLOCK_SIZE, 0, stream>>>(
-        a->party_out.data, B * PKR_PARTY_HIDDEN);
-
-    pkr_concat_kernel<<<grid_size(B * PKR_ENC_CONCAT), BLOCK_SIZE, 0, stream>>>(
-        a->concat_raw.data, a->conv2_out.data, a->position_out.data, a->battle_out.data,
-        a->progress_out.data, a->party_out.data, a->visited_out.data, B);
-
-    pkr_gate_kernel<<<grid_size(B * PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
-        input.data, ew->gate_w.data, ew->gate_b.data, a->gate_out.data, a->gate_x.data, B, ew->obs_size);
-    pkr_gate_apply_kernel<<<grid_size(B * PKR_ENC_CONCAT), BLOCK_SIZE, 0, stream>>>(
-        a->concat.data, a->concat_raw.data, a->gate_out.data, B);
-
-    puf_mm(&a->concat, &ew->proj_w, &a->out, stream);
-    pkr_relu_kernel<<<grid_size(B * ew->hidden), BLOCK_SIZE, 0, stream>>>(
-        a->out.data, B * ew->hidden);
+    int flat = ew->d.flat();
+    pkr_gemm(false, true, B, ew->hidden, flat, a->mm2.data, flat, ew->proj_conv_w.data, flat,
+        a->out.data, ew->hidden, 0.0f, stream);
+    pkr_gemm(false, true, B, ew->hidden, ew->tail_out, a->tail.data, ew->tail_out, ew->proj_tail_w.data,
+        ew->tail_out, a->out.data, ew->hidden, 1.0f, stream);
+    pkr_relu(a->out.data, (int64_t)B * ew->hidden, stream);
     return a->out;
 }
 
-static void pokered_encoder_backward(
-        void* w, void* activations, Prec grad, cudaStream_t stream) {
+static void pokered_encoder_backward(void* w, void* activations, Prec grad, cudaStream_t stream) {
     PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
     PokeredEncoderActivations* a = (PokeredEncoderActivations*)activations;
     int B = grad.shape[0];
     int H = ew->hidden;
+    int flat = ew->d.flat();
+    int T = ew->tail_out;
 
-    pkr_relu_backward_kernel<<<grid_size(B * H), BLOCK_SIZE, 0, stream>>>(
-        grad.data, a->out.data, B * H);
-    puf_mm_tn(&grad, &a->concat, &a->proj_wgrad, stream);
-    Prec grad_concat_gated = {.data = a->concat.data, .shape = {B, PKR_ENC_CONCAT}};
-    puf_mm_nn(&grad, &ew->proj_w, &grad_concat_gated, stream);
+    pkr_relu_backward(grad.data, a->out.data, (int64_t)B * H, stream);
+    pkr_gemm(true, false, H, flat, B, grad.data, H, a->mm2.data, flat, a->proj_conv_wgrad.data, flat, 0.0f, stream);
+    pkr_gemm(true, false, H, T, B, grad.data, H, a->tail.data, T, a->proj_tail_wgrad.data, T, 0.0f, stream);
+    pkr_gemm(false, false, B, flat, H, grad.data, H, ew->proj_conv_w.data, flat, a->conv2_grad.data, flat,
+        0.0f, stream);
+    pkr_gemm(false, false, B, T, H, grad.data, H, ew->proj_tail_w.data, T, a->tail_grad.data, T, 0.0f, stream);
+    pkr_relu_backward(a->conv2_grad.data, a->mm2.data, (int64_t)B * flat, stream);
+    pkr_relu_backward(a->tail_grad.data, a->tail.data, (int64_t)B * T, stream);
 
-    pkr_gate_copy_conv_grad_kernel<<<grid_size(B * PKR_ENC_CONV_FLAT), BLOCK_SIZE, 0,
-        stream>>>(grad_concat_gated.data, a->conv2_grad.data, B);
-    pkr_gate_backward_kernel<<<grid_size(B * PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
-        grad_concat_gated.data, a->concat_raw.data, a->gate_out.data,
-        a->position_grad.data, a->battle_grad.data, a->progress_grad.data,
-        a->party_grad.data, a->visited_grad.data, a->gate_dz.data, B);
-    pkr_gate_wgrad_kernel<<<grid_size(PKR_GATE_BRANCHES), BLOCK_SIZE, 0, stream>>>(
-        a->gate_dz.data, a->gate_x.data, a->gate_w_grad.data, a->gate_b_grad.data, B);
+    for (int i = 0; i < ew->n_branches; i++) {
+        const PkrBranch& br = PKR_BRANCHES[i];
+        pkr_gemm(true, false, br.hidden, br.in_dim, B, a->tail_grad.data + br.out_off, T,
+            a->tail_in.data + br.in_off, ew->tail_in, a->branch_wgrad[i].data, br.in_dim, 0.0f, stream);
+        if (i != PKR_BRANCH_VISITED) {
+            pkr_gemm(false, false, B, br.in_dim, br.hidden, a->tail_grad.data + br.out_off, T,
+                ew->branch_w[i].data, br.in_dim, a->tail_in.data + br.in_off, ew->tail_in, 0.0f, stream);
+        }
+    }
 
-    pkr_branch_backward(&a->position_grad, &a->position_out, &a->position_in, &a->position_wgrad,
-        PKR_ENC_POSITION_HIDDEN, stream);
-    pkr_branch_backward(&a->battle_grad, &a->battle_out, &a->battle_in, &a->battle_wgrad,
-        PKR_ENC_BATTLE_HIDDEN, stream);
-    pkr_branch_backward(&a->progress_grad, &a->progress_out, &a->progress_in, &a->progress_wgrad,
-        PKR_ENC_PROGRESS_HIDDEN, stream);
-    pkr_branch_backward(&a->visited_grad, &a->visited_out, &a->visited_in, &a->visited_wgrad,
-        PKR_ENC_VISITED_HIDDEN, stream);
+    int W = ew->tail_in;
+    pkr_embed_wgrad<PKR_SPECIES_VOCAB, PKR_SPECIES_EMBED>(&a->species_wgrad_i, &a->species_embed_wgrad,
+        a->species_idx.data, B * PKR_MON_SLOTS, PkrSpeciesGrad{a->tail_in.data, W}, stream);
+    pkr_embed_wgrad<PKR_ITEM_VOCAB, PKR_ITEM_EMBED>(&a->item_wgrad_i, &a->item_embed_wgrad,
+        a->item_idx.data, B * BAG_SLOTS,
+        PkrSlotGrad<PKR_ITEM_EMBED>{a->tail_in.data, W, PKR_IN_BAG, BAG_SLOTS, PKR_BAG_SLOT_FEAT}, stream);
+    pkr_embed_wgrad<PKR_MAP_VOCAB, PKR_MAP_EMBED>(&a->map_wgrad_i, &a->map_embed_wgrad,
+        a->map_idx.data, B, PkrSlotGrad<PKR_MAP_EMBED>{a->tail_in.data, W, PKR_IN_INFO, 1, 0}, stream);
+    pkr_embed_wgrad<PKR_TILESET_VOCAB, PKR_TILESET_EMBED>(&a->tileset_wgrad_i, &a->tileset_embed_wgrad,
+        a->tileset_idx.data, B,
+        PkrSlotGrad<PKR_TILESET_EMBED>{a->tail_in.data, W, PKR_IN_INFO + PKR_MAP_EMBED, 1, 0}, stream);
 
-    pkr_relu_backward_kernel<<<grid_size(B * PKR_PARTY_HIDDEN), BLOCK_SIZE, 0,
-        stream>>>(a->party_grad.data, a->party_out.data, B * PKR_PARTY_HIDDEN);
-    Prec party_grad_t = {.data = a->party_grad.data, .shape = {B, PKR_PARTY_HIDDEN}};
-    puf_mm_tn(&party_grad_t, &a->party_in, &a->party_wgrad, stream);
-    Prec grad_party_in = {.data = a->party_in.data, .shape = {B, PKR_PARTY_MLP_IN}};
-    puf_mm_nn(&party_grad_t, &ew->party_w, &grad_party_in, stream);
-    pkr_party_species_embed_wgrad_kernel<<<
-        grid_size(PKR_PARTY_SPECIES_VOCAB * PKR_PARTY_SPECIES_EMBED_DIM), BLOCK_SIZE, 0,
-        stream>>>(a->party_species_embed_wgrad.data, grad_party_in.data,
-        a->party_species_idx.data, B);
-    pkr_party_move_embed_wgrad_kernel<<<
-        grid_size(PKR_MOVE_VOCAB * PKR_MOVE_EMBED_DIM), BLOCK_SIZE, 0,
-        stream>>>(a->party_move_embed_wgrad.data, grad_party_in.data,
-        a->party_move_idx.data, B);
-
-    pkr_conv_wgrad(a->conv2_grad.data, a->conv2_wgrad.data,
-        a->col2.data, a->mm2.data, B, PKR_ENC_C2_OC, PKR_ENC_C2_SPATIAL,
-        PKR_ENC_C2_COL_W, stream);
-    Prec mm2 = {.data = a->mm2.data, .shape = {B * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_OC}};
-    Prec col2 = {.data = a->col2.data, .shape = {B * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_COL_W}};
-    puf_mm_nn(&mm2, &ew->conv2_w, &col2, stream);
-    pkr_c2_col2im<<<grid_size(B * PKR_ENC_C2_IC * PKR_ENC_C1_SPATIAL), BLOCK_SIZE, 0,
-        stream>>>(a->col2.data, a->conv1_grad.data, B);
-
-    pkr_relu_backward_kernel<<<grid_size(B * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL),
-        BLOCK_SIZE, 0, stream>>>(
-        a->conv1_grad.data, a->conv1_out.data, B * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL);
-    pkr_conv_wgrad(a->conv1_grad.data, a->conv1_wgrad.data,
-        a->col1.data, a->mm1.data, B, PKR_ENC_C1_OC, PKR_ENC_C1_SPATIAL,
-        PKR_ENC_C1_COL_W, stream);
+    pkr_conv_backward(ew, a, B, stream);
 }
 
-static void pokered_encoder_init_weights(
-        void* w, uint64_t* seed, cudaStream_t stream) {
-    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
-    Prec c1 = {.data = ew->conv1_w.data, .shape = {PKR_ENC_C1_OC, PKR_ENC_C1_COL_W}};
-    Prec c2 = {.data = ew->conv2_w.data, .shape = {PKR_ENC_C2_OC, PKR_ENC_C2_COL_W}};
-    Prec pos_w = {.data = ew->position_w.data, .shape = {PKR_ENC_POSITION_HIDDEN, PKR_ENC_POSITION_IN}};
-    Prec bat_w = {.data = ew->battle_w.data, .shape = {PKR_ENC_BATTLE_HIDDEN, PKR_ENC_BATTLE_IN}};
-    Prec prog_w = {.data = ew->progress_w.data, .shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    Prec vis_w = {.data = ew->visited_w.data, .shape = {PKR_ENC_VISITED_HIDDEN, PKR_ENC_VISITED_IN}};
-    Prec pw = {.data = ew->party_w.data, .shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
-    Prec proj = {.data = ew->proj_w.data, .shape = {ew->hidden, PKR_ENC_CONCAT}};
-    puf_kaiming_init(&c1, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&c2, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&pos_w, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&bat_w, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&prog_w, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&vis_w, sqrtf(2.0f), (*seed)++, stream);
-    puf_kaiming_init(&pw, sqrtf(2.0f), (*seed)++, stream);
-    puf_normal_init(&ew->party_species_embed_w, 0.02f, (*seed)++, stream);
-    puf_normal_init(&ew->party_move_embed_w, 0.02f, (*seed)++, stream);
+static void pkr_weight_shapes(PokeredEncoderWeights* ew) {
+    ew->conv1_w = {.shape = {PKR_C1_OC, ew->d.colw1()}};
+    ew->conv2_w = {.shape = {PKR_C2_OC, ew->d.colw2()}};
+    for (int i = 0; i < ew->n_branches; i++) {
+        ew->branch_w[i] = {.shape = {PKR_BRANCHES[i].hidden, PKR_BRANCHES[i].in_dim}};
+    }
+    ew->species_embed_w = {.shape = {PKR_SPECIES_VOCAB, PKR_SPECIES_EMBED}};
+    ew->item_embed_w = {.shape = {PKR_ITEM_VOCAB, PKR_ITEM_EMBED}};
+    ew->map_embed_w = {.shape = {PKR_MAP_VOCAB, PKR_MAP_EMBED}};
+    ew->tileset_embed_w = {.shape = {PKR_TILESET_VOCAB, PKR_TILESET_EMBED}};
+    ew->proj_conv_w = {.shape = {ew->hidden, ew->d.flat()}};
+    ew->proj_tail_w = {.shape = {ew->hidden, ew->tail_out}};
+    if (ew->tiles) {
+        ew->tile_embed_w = {.shape = {PKR_TILE_VOCAB, PKR_TILE_EMBED}};
+        ew->sprite_embed_w = {.shape = {PKR_SPRITE_VOCAB, PKR_SPRITE_EMBED}};
+    }
+}
 
-    puf_normal_init(&ew->gate_w, 0.01f, (*seed)++, stream);
-    puf_normal_init(&ew->gate_b, 0.01f, (*seed)++, stream);
-    puf_kaiming_init(&proj, sqrtf(2.0f), (*seed)++, stream);
+static void pokered_encoder_init_weights(void* w, uint64_t* seed, cudaStream_t stream) {
+    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
+    puf_kaiming_init(&ew->conv1_w, sqrtf(2.0f), (*seed)++, stream);
+    puf_kaiming_init(&ew->conv2_w, sqrtf(2.0f), (*seed)++, stream);
+    for (int i = 0; i < ew->n_branches; i++) {
+        puf_kaiming_init(&ew->branch_w[i], sqrtf(2.0f), (*seed)++, stream);
+    }
+    puf_normal_init(&ew->species_embed_w, 0.02f, (*seed)++, stream);
+    puf_normal_init(&ew->item_embed_w, 0.02f, (*seed)++, stream);
+    puf_normal_init(&ew->map_embed_w, 0.02f, (*seed)++, stream);
+    puf_normal_init(&ew->tileset_embed_w, 0.02f, (*seed)++, stream);
+    puf_kaiming_init(&ew->proj_conv_w, sqrtf(2.0f), (*seed)++, stream);
+    puf_kaiming_init(&ew->proj_tail_w, sqrtf(2.0f), (*seed)++, stream);
+    if (ew->tiles) {
+        puf_normal_init(&ew->tile_embed_w, 0.02f, (*seed)++, stream);
+        puf_normal_init(&ew->sprite_embed_w, 0.02f, (*seed)++, stream);
+    }
 }
 
 static void pokered_encoder_reg_params(void* w, Allocator* alloc) {
     PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
-    ew->conv1_w = {.shape = {PKR_ENC_C1_OC, PKR_ENC_C1_COL_W}};
-    ew->conv2_w = {.shape = {PKR_ENC_C2_OC, PKR_ENC_C2_COL_W}};
-    ew->position_w = {.shape = {PKR_ENC_POSITION_HIDDEN, PKR_ENC_POSITION_IN}};
-    ew->battle_w = {.shape = {PKR_ENC_BATTLE_HIDDEN, PKR_ENC_BATTLE_IN}};
-    ew->progress_w = {.shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    ew->visited_w = {.shape = {PKR_ENC_VISITED_HIDDEN, PKR_ENC_VISITED_IN}};
-    ew->party_species_embed_w = {.shape = {PKR_PARTY_SPECIES_VOCAB, PKR_PARTY_SPECIES_EMBED_DIM}};
-    ew->party_move_embed_w = {.shape = {PKR_MOVE_VOCAB, PKR_MOVE_EMBED_DIM}};
-    ew->party_w = {.shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
-    ew->gate_w = {.shape = {PKR_GATE_BRANCHES}};
-    ew->gate_b = {.shape = {PKR_GATE_BRANCHES}};
-    ew->proj_w = {.shape = {ew->hidden, PKR_ENC_CONCAT}};
+    pkr_weight_shapes(ew);
     alloc_register(alloc, &ew->conv1_w);
     alloc_register(alloc, &ew->conv2_w);
-    alloc_register(alloc, &ew->position_w);
-    alloc_register(alloc, &ew->battle_w);
-    alloc_register(alloc, &ew->progress_w);
-    alloc_register(alloc, &ew->visited_w);
-    alloc_register(alloc, &ew->party_species_embed_w);
-    alloc_register(alloc, &ew->party_move_embed_w);
-    alloc_register(alloc, &ew->party_w);
-    alloc_register(alloc, &ew->gate_w);
-    alloc_register(alloc, &ew->gate_b);
-    alloc_register(alloc, &ew->proj_w);
+    for (int i = 0; i < ew->n_branches; i++) {
+        alloc_register(alloc, &ew->branch_w[i]);
+    }
+    alloc_register(alloc, &ew->species_embed_w);
+    alloc_register(alloc, &ew->item_embed_w);
+    alloc_register(alloc, &ew->map_embed_w);
+    alloc_register(alloc, &ew->tileset_embed_w);
+    alloc_register(alloc, &ew->proj_conv_w);
+    alloc_register(alloc, &ew->proj_tail_w);
+    if (ew->tiles) {
+        alloc_register(alloc, &ew->tile_embed_w);
+        alloc_register(alloc, &ew->sprite_embed_w);
+    }
 }
 
-static void pokered_encoder_reg_train(
-        void* w, void* activations, Allocator* acts, Allocator* grads, int B_TT) {
-    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
-    PokeredEncoderActivations* a = (PokeredEncoderActivations*)activations;
-    a->conv1_out = {.shape = {B_TT * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL}};
-    a->conv1_grad = {.shape = {B_TT * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL}};
-    a->conv1_wgrad = {.shape = {PKR_ENC_C1_OC, PKR_ENC_C1_COL_W}};
-    a->col1 = {.shape = {B_TT * PKR_ENC_C1_SPATIAL, PKR_ENC_C1_COL_W}};
-    a->mm1 = {.shape = {B_TT * PKR_ENC_C1_SPATIAL, PKR_ENC_C1_OC}};
-    a->conv2_out = {.shape = {B_TT * PKR_ENC_C2_OC * PKR_ENC_C2_SPATIAL}};
-    a->conv2_grad = {.shape = {B_TT * PKR_ENC_C2_OC * PKR_ENC_C2_SPATIAL}};
-    a->conv2_wgrad = {.shape = {PKR_ENC_C2_OC, PKR_ENC_C2_COL_W}};
-    a->col2 = {.shape = {B_TT * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_COL_W}};
-    a->mm2 = {.shape = {B_TT * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_OC}};
-
-    a->position_in = {.shape = {B_TT, PKR_ENC_POSITION_IN}};
-    a->position_out = {.shape = {B_TT, PKR_ENC_POSITION_HIDDEN}};
-    a->position_grad = {.shape = {B_TT, PKR_ENC_POSITION_HIDDEN}};
-    a->position_wgrad = {.shape = {PKR_ENC_POSITION_HIDDEN, PKR_ENC_POSITION_IN}};
-    a->battle_in = {.shape = {B_TT, PKR_ENC_BATTLE_IN}};
-    a->battle_out = {.shape = {B_TT, PKR_ENC_BATTLE_HIDDEN}};
-    a->battle_grad = {.shape = {B_TT, PKR_ENC_BATTLE_HIDDEN}};
-    a->battle_wgrad = {.shape = {PKR_ENC_BATTLE_HIDDEN, PKR_ENC_BATTLE_IN}};
-    a->progress_in = {.shape = {B_TT, PKR_ENC_PROGRESS_IN}};
-    a->progress_out = {.shape = {B_TT, PKR_ENC_PROGRESS_HIDDEN}};
-    a->progress_grad = {.shape = {B_TT, PKR_ENC_PROGRESS_HIDDEN}};
-    a->progress_wgrad = {.shape = {PKR_ENC_PROGRESS_HIDDEN, PKR_ENC_PROGRESS_IN}};
-    a->visited_in = {.shape = {B_TT, PKR_ENC_VISITED_IN}};
-    a->visited_out = {.shape = {B_TT, PKR_ENC_VISITED_HIDDEN}};
-    a->visited_grad = {.shape = {B_TT, PKR_ENC_VISITED_HIDDEN}};
-    a->visited_wgrad = {.shape = {PKR_ENC_VISITED_HIDDEN, PKR_ENC_VISITED_IN}};
-
-    a->party_species_idx = {.shape = {B_TT, PARTY_SIZE}};
-    a->party_move_idx = {.shape = {B_TT, PARTY_SIZE, 4}};
-    a->party_in = {.shape = {B_TT, PKR_PARTY_MLP_IN}};
-    a->party_out = {.shape = {B_TT, PKR_PARTY_HIDDEN}};
-    a->party_grad = {.shape = {B_TT, PKR_PARTY_HIDDEN}};
-    a->party_wgrad = {.shape = {PKR_PARTY_HIDDEN, PKR_PARTY_MLP_IN}};
-    a->party_species_embed_wgrad = {.shape = {PKR_PARTY_SPECIES_VOCAB, PKR_PARTY_SPECIES_EMBED_DIM}};
-    a->party_move_embed_wgrad = {.shape = {PKR_MOVE_VOCAB, PKR_MOVE_EMBED_DIM}};
-
-    a->gate_out = {.shape = {B_TT, PKR_GATE_BRANCHES}};
-    a->gate_x = {.shape = {B_TT}};
-    a->gate_dz = {.shape = {B_TT, PKR_GATE_BRANCHES}};
-    a->gate_w_grad = {.shape = {PKR_GATE_BRANCHES}};
-    a->gate_b_grad = {.shape = {PKR_GATE_BRANCHES}};
-
-    a->concat_raw = {.shape = {B_TT, PKR_ENC_CONCAT}};
-    a->concat = {.shape = {B_TT, PKR_ENC_CONCAT}};
-    a->out = {.shape = {B_TT, ew->hidden}};
-    a->proj_wgrad = {.shape = {ew->hidden, PKR_ENC_CONCAT}};
-
-    alloc_register(acts, &a->conv1_out); alloc_register(acts, &a->conv1_grad);
-    alloc_register(grads, &a->conv1_wgrad);
-    alloc_register(acts, &a->col1); alloc_register(acts, &a->mm1);
-    alloc_register(acts, &a->conv2_out); alloc_register(acts, &a->conv2_grad);
-    alloc_register(grads, &a->conv2_wgrad);
-    alloc_register(acts, &a->col2); alloc_register(acts, &a->mm2);
-
-    alloc_register(acts, &a->position_in); alloc_register(acts, &a->position_out);
-    alloc_register(acts, &a->position_grad); alloc_register(grads, &a->position_wgrad);
-    alloc_register(acts, &a->battle_in); alloc_register(acts, &a->battle_out);
-    alloc_register(acts, &a->battle_grad); alloc_register(grads, &a->battle_wgrad);
-    alloc_register(acts, &a->progress_in); alloc_register(acts, &a->progress_out);
-    alloc_register(acts, &a->progress_grad); alloc_register(grads, &a->progress_wgrad);
-    alloc_register(acts, &a->visited_in); alloc_register(acts, &a->visited_out);
-    alloc_register(acts, &a->visited_grad); alloc_register(grads, &a->visited_wgrad);
-
-    alloc_register(acts, &a->party_species_idx); alloc_register(acts, &a->party_move_idx);
-    alloc_register(acts, &a->party_in); alloc_register(acts, &a->party_out);
-    alloc_register(acts, &a->party_grad); alloc_register(grads, &a->party_wgrad);
-    alloc_register(grads, &a->party_species_embed_wgrad);
-    alloc_register(grads, &a->party_move_embed_wgrad);
-
-    alloc_register(acts, &a->gate_out); alloc_register(acts, &a->gate_x);
-    alloc_register(acts, &a->gate_dz);
-    alloc_register(grads, &a->gate_w_grad); alloc_register(grads, &a->gate_b_grad);
-
-    alloc_register(acts, &a->concat_raw); alloc_register(acts, &a->concat);
-    alloc_register(acts, &a->out);
-    alloc_register(grads, &a->proj_wgrad);
-    pkr_enc_last = a;
-}
-
-static void pokered_encoder_reg_rollout(
-        void* w, void* activations, Allocator* alloc, int B) {
-    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
-    PokeredEncoderActivations* a = (PokeredEncoderActivations*)activations;
-    a->conv1_out = {.shape = {B * PKR_ENC_C1_OC * PKR_ENC_C1_SPATIAL}};
-    a->col1 = {.shape = {B * PKR_ENC_C1_SPATIAL, PKR_ENC_C1_COL_W}};
-    a->mm1 = {.shape = {B * PKR_ENC_C1_SPATIAL, PKR_ENC_C1_OC}};
-    a->conv2_out = {.shape = {B * PKR_ENC_C2_OC * PKR_ENC_C2_SPATIAL}};
-    a->col2 = {.shape = {B * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_COL_W}};
-    a->mm2 = {.shape = {B * PKR_ENC_C2_SPATIAL, PKR_ENC_C2_OC}};
-
-    a->position_in = {.shape = {B, PKR_ENC_POSITION_IN}};
-    a->position_out = {.shape = {B, PKR_ENC_POSITION_HIDDEN}};
-    a->battle_in = {.shape = {B, PKR_ENC_BATTLE_IN}};
-    a->battle_out = {.shape = {B, PKR_ENC_BATTLE_HIDDEN}};
-    a->progress_in = {.shape = {B, PKR_ENC_PROGRESS_IN}};
-    a->progress_out = {.shape = {B, PKR_ENC_PROGRESS_HIDDEN}};
-    a->visited_in = {.shape = {B, PKR_ENC_VISITED_IN}};
-    a->visited_out = {.shape = {B, PKR_ENC_VISITED_HIDDEN}};
-
-    a->party_species_idx = {.shape = {B, PARTY_SIZE}};
-    a->party_move_idx = {.shape = {B, PARTY_SIZE, 4}};
-    a->party_in = {.shape = {B, PKR_PARTY_MLP_IN}};
-    a->party_out = {.shape = {B, PKR_PARTY_HIDDEN}};
-
-    a->gate_out = {.shape = {B, PKR_GATE_BRANCHES}};
-    a->gate_x = {.shape = {B}};
-    a->concat_raw = {.shape = {B, PKR_ENC_CONCAT}};
-    a->concat = {.shape = {B, PKR_ENC_CONCAT}};
+static void pkr_reg_forward_acts(PokeredEncoderWeights* ew, PokeredEncoderActivations* a, Allocator* acts, int B) {
+    const PkrConvDims& d = ew->d;
+    a->col1 = {.shape = {B * d.sp1(), d.colw1()}};
+    a->mm1 = {.shape = {B * d.sp1(), PKR_C1_OC}};
+    a->col2 = {.shape = {B * d.sp2(), d.colw2()}};
+    a->mm2 = {.shape = {B * d.sp2(), PKR_C2_OC}};
+    a->tail_in = {.shape = {B, ew->tail_in}};
+    a->tail = {.shape = {B, ew->tail_out}};
     a->out = {.shape = {B, ew->hidden}};
+    a->species_idx = {.shape = {B, PKR_MON_SLOTS}};
+    a->item_idx = {.shape = {B, BAG_SLOTS}};
+    a->map_idx = {.shape = {B}};
+    a->tileset_idx = {.shape = {B}};
+    alloc_register(acts, &a->col1); alloc_register(acts, &a->mm1);
+    alloc_register(acts, &a->col2); alloc_register(acts, &a->mm2);
+    alloc_register(acts, &a->tail_in); alloc_register(acts, &a->tail); alloc_register(acts, &a->out);
+    alloc_register(acts, &a->species_idx); alloc_register(acts, &a->item_idx);
+    alloc_register(acts, &a->map_idx); alloc_register(acts, &a->tileset_idx);
+    if (ew->tiles) {
+        a->tile_idx = {.shape = {B, PK_TILE_MAP_CELLS}};
+        a->sprite_idx = {.shape = {B, PK_TILE_MAP_CELLS}};
+        alloc_register(acts, &a->tile_idx); alloc_register(acts, &a->sprite_idx);
+    }
+}
 
-    alloc_register(alloc, &a->conv1_out);
-    alloc_register(alloc, &a->col1); alloc_register(alloc, &a->mm1);
-    alloc_register(alloc, &a->conv2_out);
-    alloc_register(alloc, &a->col2); alloc_register(alloc, &a->mm2);
-    alloc_register(alloc, &a->position_in); alloc_register(alloc, &a->position_out);
-    alloc_register(alloc, &a->battle_in); alloc_register(alloc, &a->battle_out);
-    alloc_register(alloc, &a->progress_in); alloc_register(alloc, &a->progress_out);
-    alloc_register(alloc, &a->visited_in); alloc_register(alloc, &a->visited_out);
-    alloc_register(alloc, &a->party_species_idx); alloc_register(alloc, &a->party_move_idx);
-    alloc_register(alloc, &a->party_in); alloc_register(alloc, &a->party_out);
-    alloc_register(alloc, &a->gate_out); alloc_register(alloc, &a->gate_x);
-    alloc_register(alloc, &a->concat_raw); alloc_register(alloc, &a->concat);
-    alloc_register(alloc, &a->out);
-    pkr_enc_last = a;
+static void pkr_reg_wgrad(Allocator* acts, Allocator* grads, Prec* wgrad, Long* scratch, int V, int E) {
+    *wgrad = {.shape = {V, E}};
+    *scratch = {.shape = {V * E}};
+    alloc_register(grads, wgrad);
+    alloc_register(acts, scratch);
+}
+
+static void pokered_encoder_reg_train(void* w, void* activations, Allocator* acts, Allocator* grads, int B_TT) {
+    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)w;
+    PokeredEncoderActivations* a = (PokeredEncoderActivations*)activations;
+    const PkrConvDims& d = ew->d;
+    pkr_reg_forward_acts(ew, a, acts, B_TT);
+
+    a->conv1_grad = {.shape = {B_TT * d.sp1(), PKR_C1_OC}};
+    a->conv2_grad = {.shape = {B_TT * d.sp2(), PKR_C2_OC}};
+    a->tail_grad = {.shape = {B_TT, ew->tail_out}};
+    alloc_register(acts, &a->conv1_grad); alloc_register(acts, &a->conv2_grad); alloc_register(acts, &a->tail_grad);
+
+    a->conv1_wgrad = {.shape = {PKR_C1_OC, d.colw1()}};
+    a->conv2_wgrad = {.shape = {PKR_C2_OC, d.colw2()}};
+    alloc_register(grads, &a->conv1_wgrad);
+    alloc_register(grads, &a->conv2_wgrad);
+    for (int i = 0; i < ew->n_branches; i++) {
+        a->branch_wgrad[i] = {.shape = {PKR_BRANCHES[i].hidden, PKR_BRANCHES[i].in_dim}};
+        alloc_register(grads, &a->branch_wgrad[i]);
+    }
+    pkr_reg_wgrad(acts, grads, &a->species_embed_wgrad, &a->species_wgrad_i, PKR_SPECIES_VOCAB, PKR_SPECIES_EMBED);
+    pkr_reg_wgrad(acts, grads, &a->item_embed_wgrad, &a->item_wgrad_i, PKR_ITEM_VOCAB, PKR_ITEM_EMBED);
+    pkr_reg_wgrad(acts, grads, &a->map_embed_wgrad, &a->map_wgrad_i, PKR_MAP_VOCAB, PKR_MAP_EMBED);
+    pkr_reg_wgrad(acts, grads, &a->tileset_embed_wgrad, &a->tileset_wgrad_i, PKR_TILESET_VOCAB,
+        PKR_TILESET_EMBED);
+    a->proj_conv_wgrad = {.shape = {ew->hidden, d.flat()}};
+    a->proj_tail_wgrad = {.shape = {ew->hidden, ew->tail_out}};
+    alloc_register(grads, &a->proj_conv_wgrad);
+    alloc_register(grads, &a->proj_tail_wgrad);
+    if (ew->tiles) {
+        pkr_reg_wgrad(acts, grads, &a->tile_embed_wgrad, &a->tile_wgrad_i, PKR_TILE_VOCAB, PKR_TILE_EMBED);
+        pkr_reg_wgrad(acts, grads, &a->sprite_embed_wgrad, &a->sprite_wgrad_i, PKR_SPRITE_VOCAB,
+            PKR_SPRITE_EMBED);
+        a->tile_dx = {.shape = {B_TT * PK_TILE_MAP_CELLS * PKR_TL_DX_STRIDE}};
+        alloc_register(acts, &a->tile_dx);
+    }
+}
+
+static void pokered_encoder_reg_rollout(void* w, void* activations, Allocator* alloc, int B) {
+    pkr_reg_forward_acts((PokeredEncoderWeights*)w, (PokeredEncoderActivations*)activations, alloc, B);
 }
 
 static void* pokered_encoder_create_weights(void* self) {
     Encoder* e = (Encoder*)self;
-    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)calloc(
-        1, sizeof(PokeredEncoderWeights));
+    PokeredEncoderWeights* ew = (PokeredEncoderWeights*)calloc(1, sizeof(PokeredEncoderWeights));
     ew->obs_size = e->in_dim;
     ew->hidden = e->out_dim;
+    ew->tiles = g_pokered_obs_tiles > 0;
+    ew->d = pkr_dims(ew->tiles);
+    ew->n_branches = ew->tiles ? PKR_BRANCH_VISITED : PKR_BRANCH_VISITED + 1;
+    ew->tail_in = ew->tiles ? PKR_IN_VISITED : PKR_IN_VISITED + PKR_VISITED_IN;
+    ew->tail_out = ew->tiles ? PKR_OUT_VISITED : PKR_OUT_VISITED + PKR_VISITED_HIDDEN;
+    if (ew->obs_size != (ew->tiles ? TILES_TOTAL_OBSERVATIONS : SCREEN_TOTAL_OBSERVATIONS)) {
+        fprintf(stderr, "pokered encoder: obs size %d does not match obs_mode layout\n", ew->obs_size);
+        exit(1);
+    }
     return ew;
 }
 
@@ -835,173 +907,3 @@ static void create_pokered_conv_encoder(Encoder* enc) {
         .activation_size = sizeof(PokeredEncoderActivations),
     };
 }
-
-#ifdef POKERED_DUAL_HEAD
-
-__global__ void pkr_decoder_select_kernel(
-        precision_t* __restrict__ out, const precision_t* __restrict__ battle_out,
-        const precision_t* __restrict__ overworld_out,
-        const precision_t* __restrict__ gate_x, int B, int od1) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * od1) {
-        return;
-    }
-    int b = idx / od1;
-    bool in_battle = to_float(gate_x[b]) > 0.5f;
-    out[idx] = in_battle ? battle_out[idx] : overworld_out[idx];
-}
-
-__global__ void pkr_decoder_route_grad_kernel(
-        precision_t* __restrict__ grad_battle_out,
-        precision_t* __restrict__ grad_overworld_out,
-        const precision_t* __restrict__ grad_out,
-        const precision_t* __restrict__ gate_x, int B, int od1) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * od1) {
-        return;
-    }
-    int b = idx / od1;
-    bool in_battle = to_float(gate_x[b]) > 0.5f;
-    precision_t g = grad_out[idx];
-    precision_t z = from_float(0.0f);
-    grad_battle_out[idx] = in_battle ? g : z;
-    grad_overworld_out[idx] = in_battle ? z : g;
-}
-
-struct PokeredDecoderWeights {
-
-    Prec weight_unused, logstd;
-    int hidden_dim, output_dim;
-    bool continuous;
-    Prec battle_weight, overworld_weight;
-};
-
-struct PokeredDecoderActivations {
-    PokeredEncoderActivations* enc;
-    Prec battle_out, overworld_out;
-    Prec out;
-    Prec saved_input, grad_input;
-    Prec grad_out;
-    Prec grad_battle_out, grad_overworld_out;
-    Prec battle_wgrad, overworld_wgrad;
-};
-
-static_assert(offsetof(PokeredDecoderWeights, logstd) == offsetof(DecoderWeights, logstd),
-              "PokeredDecoderWeights header must mirror DecoderWeights (logstd)");
-static_assert(offsetof(PokeredDecoderWeights, continuous) == offsetof(DecoderWeights, continuous),
-              "PokeredDecoderWeights header must mirror DecoderWeights (continuous)");
-
-static Prec pokered_decoder_forward(void* w, void* activations, Prec input, cudaStream_t stream) {
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    PokeredDecoderActivations* a = (PokeredDecoderActivations*)activations;
-    int B = input.shape[0];
-    int od1 = dw->output_dim + 1;
-    if (a->saved_input.data) {
-        puf_copy(&a->saved_input, &input, stream);
-    }
-    puf_mm(&input, &dw->battle_weight, &a->battle_out, stream);
-    puf_mm(&input, &dw->overworld_weight, &a->overworld_out, stream);
-    PokeredEncoderActivations* ea = a->enc;
-    pkr_decoder_select_kernel<<<grid_size(B * od1), BLOCK_SIZE, 0, stream>>>(
-        a->out.data, a->battle_out.data, a->overworld_out.data, ea->gate_x.data, B, od1);
-    return a->out;
-}
-
-static Prec pokered_decoder_backward(void* w, void* activations,
-        Float grad_logits, Float grad_logstd, Float grad_value, cudaStream_t stream) {
-    (void)grad_logstd;
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    PokeredDecoderActivations* a = (PokeredDecoderActivations*)activations;
-    int B = a->saved_input.shape[0];
-    int od = dw->output_dim, od1 = od + 1;
-    assemble_decoder_grad<<<grid_size(B * od1), BLOCK_SIZE, 0, stream>>>(
-        a->grad_out.data, grad_logits.data, grad_value.data, B, od, od1);
-    PokeredEncoderActivations* ea = a->enc;
-    pkr_decoder_route_grad_kernel<<<grid_size(B * od1), BLOCK_SIZE, 0, stream>>>(
-        a->grad_battle_out.data, a->grad_overworld_out.data, a->grad_out.data,
-        ea->gate_x.data, B, od1);
-
-    puf_mm_tn_async_after(&a->grad_battle_out, &a->saved_input, &a->battle_wgrad, stream);
-    puf_mm_tn_async_after(&a->grad_overworld_out, &a->saved_input, &a->overworld_wgrad, stream);
-    puf_mm_nn(&a->grad_battle_out, &dw->battle_weight, &a->grad_input, stream, 1.0f, 0.0f);
-    puf_mm_nn(&a->grad_overworld_out, &dw->overworld_weight, &a->grad_input, stream, 1.0f, 1.0f);
-    return a->grad_input;
-}
-
-static void pokered_decoder_init_weights(void* w, uint64_t* seed, cudaStream_t stream) {
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    puf_kaiming_init(&dw->battle_weight, 1.0f, (*seed)++, stream);
-    puf_kaiming_init(&dw->overworld_weight, 1.0f, (*seed)++, stream);
-}
-
-static void pokered_decoder_reg_params(void* w, Allocator* alloc) {
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    int od1 = dw->output_dim + 1;
-    dw->battle_weight = {.shape = {od1, dw->hidden_dim}};
-    dw->overworld_weight = {.shape = {od1, dw->hidden_dim}};
-    alloc_register(alloc, &dw->battle_weight);
-    alloc_register(alloc, &dw->overworld_weight);
-}
-
-static void pokered_decoder_reg_train(void* w, void* activations,
-        Allocator* acts, Allocator* grads, int B_TT) {
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    PokeredDecoderActivations* a = (PokeredDecoderActivations*)activations;
-    int od1 = dw->output_dim + 1;
-    *a = {};
-    a->battle_out = {.shape = {B_TT, od1}};
-    a->overworld_out = {.shape = {B_TT, od1}};
-    a->out = {.shape = {B_TT, od1}};
-    a->saved_input = {.shape = {B_TT, dw->hidden_dim}};
-    a->grad_input = {.shape = {B_TT, dw->hidden_dim}};
-    a->grad_out = {.shape = {B_TT, od1}};
-    a->grad_battle_out = {.shape = {B_TT, od1}};
-    a->grad_overworld_out = {.shape = {B_TT, od1}};
-    a->battle_wgrad = {.shape = {od1, dw->hidden_dim}};
-    a->overworld_wgrad = {.shape = {od1, dw->hidden_dim}};
-    alloc_register(acts, &a->battle_out); alloc_register(acts, &a->overworld_out);
-    alloc_register(acts, &a->out); alloc_register(acts, &a->saved_input);
-    alloc_register(acts, &a->grad_input); alloc_register(acts, &a->grad_out);
-    alloc_register(acts, &a->grad_battle_out); alloc_register(acts, &a->grad_overworld_out);
-    alloc_register(grads, &a->battle_wgrad); alloc_register(grads, &a->overworld_wgrad);
-    a->enc = pkr_enc_last;
-}
-
-static void pokered_decoder_reg_rollout(void* w, void* activations, Allocator* alloc, int B) {
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)w;
-    PokeredDecoderActivations* a = (PokeredDecoderActivations*)activations;
-    int od1 = dw->output_dim + 1;
-    *a = {};
-    a->battle_out = {.shape = {B, od1}};
-    a->overworld_out = {.shape = {B, od1}};
-    a->out = {.shape = {B, od1}};
-    alloc_register(alloc, &a->battle_out);
-    alloc_register(alloc, &a->overworld_out);
-    alloc_register(alloc, &a->out);
-    a->enc = pkr_enc_last;
-}
-
-static void* pokered_decoder_create_weights(void* self) {
-    Decoder* d = (Decoder*)self;
-    PokeredDecoderWeights* dw = (PokeredDecoderWeights*)calloc(1, sizeof(PokeredDecoderWeights));
-    dw->hidden_dim = d->hidden_dim;
-    dw->output_dim = d->output_dim;
-    dw->continuous = false;
-    return dw;
-}
-
-static void create_pokered_decoder(Decoder* dec) {
-    *dec = Decoder{
-        .forward = pokered_decoder_forward,
-        .backward = pokered_decoder_backward,
-        .init_weights = pokered_decoder_init_weights,
-        .reg_params = pokered_decoder_reg_params,
-        .reg_train = pokered_decoder_reg_train,
-        .reg_rollout = pokered_decoder_reg_rollout,
-        .create_weights = pokered_decoder_create_weights,
-        .hidden_dim = dec->hidden_dim, .output_dim = dec->output_dim,
-        .continuous = dec->continuous,
-        .activation_size = (int)sizeof(PokeredDecoderActivations),
-    };
-}
-#endif

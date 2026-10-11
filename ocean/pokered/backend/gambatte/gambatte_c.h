@@ -28,6 +28,7 @@ void gambatte_set_audio_enabled(gambatte_handle gb, bool enabled);
 uint8_t gambatte_read_mem(gambatte_handle gb, uint16_t addr);
 void    gambatte_write_mem(gambatte_handle gb, uint16_t addr, uint8_t val);
 
+const uint8_t *gambatte_rambank0_ptr(gambatte_handle gb);
 const uint8_t *gambatte_rambank1_ptr(gambatte_handle gb);
 
 bool gambatte_save_state_file(gambatte_handle gb, const char *path);

@@ -390,7 +390,8 @@ static inline int puf_ini_get_list(Ini* ini, const char* section,
     return n;
 }
 
-static inline void puf_ini_put(Ini* ini, const char* full_key, const char* raw) {
+// strict=0 skips a key that does not exist yet instead of exiting (see puf_ini_load_env).
+static inline void puf_ini_put_ex(Ini* ini, const char* full_key, const char* raw, int strict) {
     const char* split = strrchr(full_key, '.');
     if (!split) {
         fprintf(stderr, "expected section.key, got %s\n", full_key);
@@ -404,14 +405,19 @@ static inline void puf_ini_put(Ini* ini, const char* full_key, const char* raw) 
 
     Dict* dict = puf_ini_section(ini, section, 0);
     if (!dict_find(dict, key)) {
+        if (!strict) return;
         fprintf(stderr, "missing key [%s] %s\n", section, key);
         exit(1);
     }
     puf_ini_set(dict, key, raw);
 }
 
+static inline void puf_ini_put(Ini* ini, const char* full_key, const char* raw) {
+    puf_ini_put_ex(ini, full_key, raw, 1);
+}
+
 static inline void puf_ini_apply_arg(Ini* ini, const char* default_section,
-        const char* arg, int idx) {
+        const char* arg, int idx, int strict) {
     if (arg[0] != '-' || arg[1] != '-') {
         fprintf(stderr, "unexpected argument '%s'\n", arg);
         exit(1);
@@ -450,7 +456,7 @@ static inline void puf_ini_apply_arg(Ini* ini, const char* default_section,
     } else {
         snprintf(full_key, sizeof(full_key), "%s.%s", default_section, s);
     }
-    puf_ini_put(ini, full_key, value);
+    puf_ini_put_ex(ini, full_key, value, strict);
 }
 
 static void puf_ini_load_file(Ini* ini, const char* path) {
@@ -557,13 +563,16 @@ static inline void puf_ini_load_env(Ini* ini, const char* env_name,
         }
     }
 #endif
+    // First pass is lenient: a key that only exists in a backend preset ([<backend>.env])
+    // is not in its base section yet. The preset below creates it, and the second pass,
+    // which is strict, still rejects a key that exists nowhere.
     for (int i = 0; i < argc; i++) {
-        puf_ini_apply_arg(ini, "base", argv[i], i);
+        puf_ini_apply_arg(ini, "base", argv[i], i, 0);
     }
     puf_ini_apply_backend_presets(ini);
     // Re-apply so explicit command-line overrides win over the preset.
     for (int i = 0; i < argc; i++) {
-        puf_ini_apply_arg(ini, "base", argv[i], i);
+        puf_ini_apply_arg(ini, "base", argv[i], i, 1);
     }
 }
 

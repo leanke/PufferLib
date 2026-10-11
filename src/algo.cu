@@ -85,11 +85,12 @@ thread_local void* g_cublas_dw_workspace = NULL;
 thread_local cudaStream_t g_dw_stream = NULL;
 thread_local cudaEvent_t g_dw_done = NULL;
 
+static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
+
 static void cublas_init_one(cublasHandle_t* handle, void** workspace) {
-    const size_t ws_bytes = 32 * 1024 * 1024;
     cublasCreate(handle);
-    cudaMalloc(workspace, ws_bytes);
-    cublasSetWorkspace(*handle, *workspace, ws_bytes);
+    cudaMalloc(workspace, CUBLAS_WS_BYTES);
+    cublasSetWorkspace(*handle, *workspace, CUBLAS_WS_BYTES);
     cublasSetMathMode(*handle, CUBLAS_DEFAULT_MATH);
 }
 
@@ -101,6 +102,15 @@ void cublas_init_handle() {
     cudaEventCreateWithFlags(&g_main_ready, cudaEventDisableTiming);
 }
 
+// cublasSetStream resets the workspace to cuBLAS's default pool, whose size
+// during graph capture is state-dependent (can drop split-K); re-bind ours.
+void puf_cublas_set_stream(cublasHandle_t handle, cudaStream_t stream) {
+    cublasSetStream(handle, stream);
+    cublasSetWorkspace(handle,
+        handle == g_cublas_dw_handle ? g_cublas_dw_workspace : g_cublas_workspace,
+        CUBLAS_WS_BYTES);
+}
+
 // Dense row-major GEMM: C = alpha * op_a(A) @ op_b(B) + beta * C
 static void cublasGemmExDense(cublasHandle_t handle,
         cublasOperation_t op_a, cublasOperation_t op_b,
@@ -108,7 +118,7 @@ static void cublasGemmExDense(cublasHandle_t handle,
         cudaStream_t stream, float alpha = 1.0f, float beta = 0.0f) {
     int lda = (op_a == CUBLAS_OP_N) ? K : M;
     int ldb = (op_b == CUBLAS_OP_N) ? N : K;
-    cublasSetStream(handle, stream);
+    puf_cublas_set_stream(handle, stream);
     cublasGemmEx(handle, op_b, op_a, N, M, K, &alpha,
         B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
         C, CUBLAS_PRECISION, N, CUBLAS_COMPUTE, CUBLAS_GEMM_DEFAULT);

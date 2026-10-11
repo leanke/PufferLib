@@ -89,9 +89,7 @@ static void create_custom_encoder(Encoder* enc) {
 }
 
 static void create_custom_decoder(Decoder* dec) {
-#if (defined(PUFFER_POKERED)) && defined(POKERED_DUAL_HEAD)
-    create_pokered_decoder(dec);
-#elif defined(PUFFER_NETHACK)
+#if defined(PUFFER_NETHACK)
     create_nethack_decoder(dec);
 #else
     (void)dec;

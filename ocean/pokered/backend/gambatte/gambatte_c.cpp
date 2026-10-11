@@ -82,6 +82,11 @@ void gambatte_set_audio_enabled(gambatte_handle gb, bool enabled) {
     if (gb) as_state(gb)->gb.setSoundSynthesisEnabled(enabled);
 }
 
+const uint8_t *gambatte_rambank0_ptr(gambatte_handle gb) {
+    if (!gb) return nullptr;
+    return static_cast<const uint8_t *>(as_state(gb)->gb.rambank0_ptr());
+}
+
 const uint8_t *gambatte_rambank1_ptr(gambatte_handle gb) {
     if (!gb) return nullptr;
     return static_cast<const uint8_t *>(as_state(gb)->gb.rambank1_ptr());

@@ -25,9 +25,12 @@
 #include <omp.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sched.h>
 #include <spawn.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -36,6 +39,7 @@
 
 // Project
 #include "ini.h"
+#include "tblog.h"
 
 #ifdef PRECISION_FLOAT
 typedef float precision_t;
@@ -438,6 +442,8 @@ struct VecEnv {
     pthread_t* threads;
     float* accum;
     int num_workers;
+    int numa_node;  // pinned buffers' node, -1 = unbound
+    cpu_set_t numa_cpus;
     // GPU log reduce scratch (unused on CPU)
     float* log_scratch;
 };
@@ -877,6 +883,17 @@ static void pufferl_forward_step(PuffeRL* pufferl, int buf, int t,
     }
 }
 
+// Launch errors are often sticky from an earlier async fault; print both.
+static void graph_launch_checked(cudaGraphExec_t g, cudaStream_t stream, int idx) {
+    cudaError_t pending = cudaPeekAtLastError();
+    cudaError_t e = cudaGraphLaunch(g, stream);
+    if (e != cudaSuccess) {
+        fprintf(stderr, "cudaGraphLaunch failed: graph=%d launch=%s pending=%s\n",
+            idx, cudaGetErrorString(e), cudaGetErrorString(pending));
+        abort();
+    }
+}
+
 void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     Hypers* hypers = &pufferl->hypers;
     // GPU rollout graphs the whole horizon; CPU still graphs one net step.
@@ -886,9 +903,7 @@ void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     profile_begin("fused_rollout", hypers->profile);
 
     if (step_graph && pufferl->rollout_graphs[graph] != NULL) {
-        assert(cudaGraphLaunch(
-            pufferl->rollout_graphs[graph], stream) == cudaSuccess
-            && "cudaGraphLaunch failed");
+        graph_launch_checked(pufferl->rollout_graphs[graph], stream, graph);
         profile_end(hypers->profile);
         return;
     }
@@ -906,8 +921,7 @@ void pufferl_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         assert(cudaGraphInstantiate(&pufferl->rollout_graphs[graph], _graph, 0)
                 == cudaSuccess && "cudaGraphInstantiate failed");
         cudaGraphDestroy(_graph);
-        assert(cudaGraphLaunch(pufferl->rollout_graphs[graph], stream) == cudaSuccess
-                && "cudaGraphLaunch failed");
+        graph_launch_checked(pufferl->rollout_graphs[graph], stream, graph);
     }
     profile_end(hypers->profile);
 }
@@ -971,6 +985,75 @@ static Env* puf_vec_create(int, Dict*, obs_t*, float*, float*, float*) {
 }
 #endif
 
+// Node owning the GPU's PCIe root complex; H2D/D2H DMA from other nodes crosses UPI.
+static int gpu_numa_node(int gpu, cpu_set_t* cpus) {
+    char bus[32], path[96], list[1024];
+    if (cudaDeviceGetPCIBusId(bus, sizeof(bus), gpu) != cudaSuccess) {
+        return -1;
+    }
+    for (char* c = bus; *c; c++) {
+        *c = tolower(*c);
+    }
+    int node = -1;
+    snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/numa_node", bus);
+    FILE* f = fopen(path, "r");
+    if (f) {
+        if (fscanf(f, "%d", &node) != 1) {
+            node = -1;
+        }
+        fclose(f);
+    }
+    if (node < 0) {
+        return -1;
+    }
+    snprintf(path, sizeof(path), "/sys/devices/system/node/node%d/cpulist", node);
+    f = fopen(path, "r");
+    if (!f || !fgets(list, sizeof(list), f)) {
+        if (f) {
+            fclose(f);
+        }
+        return -1;
+    }
+    fclose(f);
+    CPU_ZERO(cpus);
+    for (char* s = list; *s && *s != '\n';) {
+        char* end;
+        int lo = strtol(s, &end, 10), hi = lo;
+        if (*end == '-') {
+            hi = strtol(end + 1, &end, 10);
+        }
+        for (int c = lo; c <= hi; c++) {
+            CPU_SET(c, cpus);
+        }
+        s = *end == ',' ? end + 1 : end;
+    }
+    return CPU_COUNT(cpus) > 0 ? node : -1;
+}
+
+// Pinned host buffer with pages bound to `node` (cudaHostAlloc places them wherever
+// the calling thread happens to fault).
+static void host_pin_alloc(void** out, size_t bytes, int node) {
+    if (node >= 0) {
+        size_t len = (bytes + 4095) & ~(size_t)4095;
+        void* m = mmap(NULL, len, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        unsigned long mask = 1UL << node;
+        if (m != MAP_FAILED
+                && syscall(SYS_mbind, m, len, 2 /* MPOL_BIND */, &mask, 64, 0) == 0) {
+            memset(m, 0, len);
+            if (cudaHostRegister(m, len, cudaHostRegisterPortable) == cudaSuccess) {
+                *out = m;
+                return;
+            }
+        }
+        if (m != MAP_FAILED) {
+            munmap(m, len);
+        }
+        fprintf(stderr, "numa_bind: node %d pin failed, using cudaHostAlloc\n", node);
+    }
+    cudaHostAlloc(out, bytes, cudaHostAllocPortable);
+}
+
 static void env_setup(PuffeRL* p, VecEnv* vec, Dict* vk, Dict* ek) {
     if (PUF_BACKEND == PUF_GPU) {
         assert(vec->buffers == 1 && "GPU env: num_buffers must be 1");
@@ -990,6 +1073,18 @@ static void env_setup(PuffeRL* p, VecEnv* vec, Dict* vk, Dict* ek) {
     vec->num_workers = dict_get(vk, "num_threads") / num_buffers;
     if (vec->num_workers < 1) {
         vec->num_workers = 1;
+    }
+    vec->numa_node = -1;
+    int numa_bind = dict_get(vk, "numa_bind");
+    if (numa_bind) {
+        vec->numa_node = gpu_numa_node(p->hypers.gpu_id, &vec->numa_cpus);
+        if (vec->numa_node < 0) {
+            fprintf(stderr, "numa_bind: GPU %d has no NUMA node, unbound\n",
+                p->hypers.gpu_id);
+        } else if (numa_bind >= 2) {
+            // Before puf_init so env state is first-touched on the GPU's node too.
+            sched_setaffinity(0, sizeof(cpu_set_t), &vec->numa_cpus);
+        }
     }
     vec->env_starts = (int*)calloc(1, num_buffers * sizeof(int));
     vec->env_counts = (int*)calloc(1, num_buffers * sizeof(int));
@@ -1023,14 +1118,12 @@ static void env_setup(PuffeRL* p, VecEnv* vec, Dict* vk, Dict* ek) {
 
     size_t obs_bytes = total_agents * OBS_SIZE * sizeof(obs_t);
     size_t mask_bytes = total_agents * vec->mask_size * sizeof(unsigned char);
-    cudaHostAlloc((void**)&vec->observations, obs_bytes, cudaHostAllocPortable);
-    cudaHostAlloc((void**)&vec->actions, total_agents * NUM_ATNS * sizeof(float),
-        cudaHostAllocPortable);
-    cudaHostAlloc((void**)&vec->rewards, total_agents * sizeof(float),
-        cudaHostAllocPortable);
-    cudaHostAlloc((void**)&vec->terminals, total_agents * sizeof(float),
-        cudaHostAllocPortable);
-    cudaHostAlloc((void**)&vec->action_mask, mask_bytes, cudaHostAllocPortable);
+    int node = vec->numa_node;
+    host_pin_alloc((void**)&vec->observations, obs_bytes, node);
+    host_pin_alloc((void**)&vec->actions, total_agents * NUM_ATNS * sizeof(float), node);
+    host_pin_alloc((void**)&vec->rewards, total_agents * sizeof(float), node);
+    host_pin_alloc((void**)&vec->terminals, total_agents * sizeof(float), node);
+    host_pin_alloc((void**)&vec->action_mask, mask_bytes, node);
     memset(vec->action_mask, 1, mask_bytes);
 
     float frozen_pct = dict_get(vk, "hist_policy_percent");
@@ -1873,6 +1966,11 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
     vec->policy_layout = (int*)calloc(1, (vec->num_policies + 1) * sizeof(int));
     vec->mask_size = act_n;
 
+    // Envs whose OBS_SIZE depends on config resolve it before any buffer is sized.
+#ifdef PUF_ENV_PREINIT
+    PUF_ENV_PREINIT(env_kwargs);
+#endif
+
     // Device env IO (EnvBuf).
     pufferl->env = {
         .obs =         {.shape = {total_agents, OBS_SIZE}},
@@ -2401,6 +2499,42 @@ void trainer_eval_log(PuffeRL* p, Dict* out) {
     vec_log(p->vec, out, 0);
 }
 
+// <log_dir>/<run_id>/: resolved config.ini + TensorBoard events (config also as
+// an indented-markdown text summary so it renders verbatim in the TEXT tab).
+static void tb_open_run(TbLog* tb, Ini* ini, const char* log_dir, const char* run_id) {
+    char dir[4096];
+    snprintf(dir, sizeof(dir), "%s/%s", log_dir, run_id);
+    mkdir_p(dir);
+    char path[4200];
+    snprintf(path, sizeof(path), "%s/config.ini", dir);
+    FILE* fp = fopen(path, "w");
+    assert(fp && "failed to open tensorboard config.ini");
+    puf_ini_write(fp, ini);
+    fclose(fp);
+    if (!tb_open(tb, dir)) {
+        fprintf(stderr, "tensorboard: failed to open event file in %s\n", dir);
+        return;
+    }
+    char* raw = NULL;
+    size_t raw_n = 0;
+    FILE* mem = open_memstream(&raw, &raw_n);
+    puf_ini_write(mem, ini);
+    fclose(mem);
+    char* md = (char*)malloc(raw_n * 5 + 8);
+    size_t n = 0;
+    for (size_t i = 0; i < raw_n; i++) {
+        if (i == 0 || raw[i - 1] == '\n') {
+            memcpy(md + n, "    ", 4);
+            n += 4;
+        }
+        md[n++] = raw[i];
+    }
+    md[n] = 0;
+    tb_text(tb, 0, "config", md);
+    free(md);
+    free(raw);
+}
+
 // One dict copy per train log (+ optional final snapshot). Capacity fixed at
 // train start: ≤ train_epochs + 1 final append.
 typedef struct {
@@ -2555,7 +2689,30 @@ const char* selfplay_sample(Selfplay* sp) {
 typedef struct {
     char section[64];
     char key[64];
+    char name[130];
 } SweepParam;
+
+// [sweep.<section>.<key>] -> SweepParam{section, key}; name like "train.learning_rate".
+static void sweep_param_parse(const char* section_name, SweepParam* out) {
+    const char* path = section_name + 6;
+    const char* dot = strrchr(path, '.');
+    assert(dot && dot != path && dot[1]
+        && "expected section [sweep.<section>.<key>]");
+    snprintf(out->section, sizeof(out->section), "%.*s", (int)(dot - path), path);
+    snprintf(out->key, sizeof(out->key), "%s", dot + 1);
+    snprintf(out->name, sizeof(out->name), "%s", path);
+}
+
+static void sweep_metric_key(Ini* ini, char* buf, size_t n);
+
+static const char* SWEEP_TB_METRICS[] = {"sweep/score", "sweep/cost", "sweep/steps", "SPS"};
+#define SWEEP_TB_NUM_METRICS 4
+
+static int sweep_tb_id(Ini* ini, char* buf, size_t n) {
+    const char* id = puf_ini_get_str(ini, "base", "sweep_id");
+    snprintf(buf, n, "%s", id);
+    return id[0] && strcmp(id, "None") != 0;
+}
 
 extern char** environ;
 
@@ -2567,8 +2724,38 @@ typedef struct {
     int fd;
     pid_t pid;
     float* sample;
+    char run_id[128];
     TrainResult result;
 } SweepJob;
+
+// _sweep summary row per finished trial (step = trial count); result NULL = failed.
+static void sweep_tb_trial(TbLog* tb, int trial, SweepJob* job, TrainResult* result,
+        SweepParam* params, SweepSpace* space, int failed, double best) {
+    Dict d = {0};
+    if (result) {
+        dict_set(&d, "sweep/score", result->score);
+        dict_set(&d, "sweep/cost", result->cost);
+        dict_set(&d, "sweep/steps", result->steps);
+    }
+    dict_set(&d, "sweep/best_score", best);
+    dict_set(&d, "sweep/failed", failed);
+    tb_scalars(tb, trial, &d);
+    dict_clear(&d);
+
+    char text[4096];
+    int n = snprintf(text, sizeof(text), "**%s** (run %d) ", job->run_id, job->run);
+    if (result) {
+        n += snprintf(text + n, sizeof(text) - n, "score=%.6g cost=%.1f steps=%.0f",
+            result->score, result->cost, result->steps);
+    } else {
+        n += snprintf(text + n, sizeof(text) - n, "FAILED");
+    }
+    for (int p = 0; p < space->num && n < (int)sizeof(text) - 1; p++) {
+        n += snprintf(text + n, sizeof(text) - n, "%s%s=%.6g", p ? ", " : "  \n",
+            params[p].name, space_unnormalize(&space->spaces[p], job->sample[p]));
+    }
+    tb_text(tb, trial, "trials", text);
+}
 
 void run_sweep(Ini* ini, const char* exe_path) {
     // Build SweepSpace + param map from [sweep.<section>.<key>] sections.
@@ -2588,13 +2775,7 @@ void run_sweep(Ini* ini, const char* exe_path) {
         if (strncmp(dict->name, "sweep.", 6) != 0) {
             continue;
         }
-        const char* path = dict->name + 6;
-        const char* dot = strrchr(path, '.');
-        assert(dot && dot != path && dot[1]
-            && "expected section [sweep.<section>.<key>]");
-        snprintf(params[n_params].section, sizeof(params[n_params].section),
-            "%.*s", (int)(dot - path), path);
-        snprintf(params[n_params].key, sizeof(params[n_params].key), "%s", dot + 1);
+        sweep_param_parse(dict->name, &params[n_params]);
 
         const char* dist = dict_get_str(dict, "distribution");
         SpaceType type = SPACE_LINEAR;
@@ -2648,6 +2829,47 @@ void run_sweep(Ini* ini, const char* exe_path) {
     int use_logit = strcmp(metric_dist, "logit") == 0;
     float max_cost = puf_ini_get(ini, "sweep", "max_suggestion_cost");
     float early_stop_quantile = puf_ini_get(ini, "sweep", "early_stop_quantile");
+    int show_dashboard = puf_ini_get(ini, "sweep", "dashboard");
+
+    // <log_dir>/<env>/<sweep_id>/: one run per trial + _sweep summary run.
+    TbLog tb = {0};
+    double best_score = NAN;
+    int tb_trials = 0;
+    if (puf_ini_get(ini, "sweep", "tensorboard")) {
+        char sweep_id[64];
+        snprintf(sweep_id, sizeof(sweep_id), "sweep_%ld", (long)(1000.0 * wall_clock()));
+        puf_ini_put(ini, "base.sweep_id", sweep_id);
+        puf_ini_put(ini, "base.tensorboard", "1");
+        char env_log_dir[2048];
+        snprintf(env_log_dir, sizeof(env_log_dir), "%s/%s",
+            puf_ini_get_str(ini, "base", "log_dir"),
+            puf_ini_get_str(ini, "base", "env_name"));
+        char summary_run[128];
+        snprintf(summary_run, sizeof(summary_run), "%s/_sweep", sweep_id);
+        tb_open_run(&tb, ini, env_log_dir, summary_run);
+
+        const char** names = (const char**)calloc(n_params, sizeof(char*));
+        double* mins = (double*)calloc(n_params, sizeof(double));
+        double* maxs = (double*)calloc(n_params, sizeof(double));
+        for (int j = 0; j < n_params; j++) {
+            names[j] = params[j].name;
+            mins[j] = space->spaces[j].min;
+            maxs[j] = space->spaces[j].max;
+        }
+        char target_key[256];
+        sweep_metric_key(ini, target_key, sizeof(target_key));
+        const char* metrics[SWEEP_TB_NUM_METRICS + 1];
+        memcpy(metrics, SWEEP_TB_METRICS, sizeof(SWEEP_TB_METRICS));
+        metrics[SWEEP_TB_NUM_METRICS] = target_key;
+        if (tb.fp) {
+            tb_hparams_experiment(&tb, names, mins, maxs, n_params,
+                metrics, SWEEP_TB_NUM_METRICS + 1);
+        }
+        free(names);
+        free(mins);
+        free(maxs);
+        printf("sweep tensorboard: %s/%s\n", env_log_dir, sweep_id);
+    }
     assert(max_runs >= 1 && "sweep.max_runs must be >= 1");
     assert(downsample >= 1 && downsample <= TRAIN_RESULT_MAX_POINTS
         && "sweep.downsample must be in [1, TRAIN_RESULT_MAX_POINTS]");
@@ -2746,6 +2968,7 @@ void run_sweep(Ini* ini, const char* exe_path) {
             snprintf(run_id, sizeof(run_id), "sweep_%ld_%04d",
                 (long)(1000.0 * wall_clock()), job.run);
             puf_ini_put(ini, "base.run_id", run_id);
+            snprintf(job.run_id, sizeof(job.run_id), "%s", run_id);
 
             // Spawn train: result pipe + full ini as section.key=value argv.
             // Child may NCCL-fork again if train.gpus > 1.
@@ -2789,8 +3012,10 @@ void run_sweep(Ini* ini, const char* exe_path) {
             posix_spawn_file_actions_t actions;
             posix_spawn_file_actions_init(&actions);
             posix_spawn_file_actions_addclose(&actions, pipefd[0]);
-            posix_spawn_file_actions_addopen(
-                &actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+            if (!(show_dashboard && i == 0)) {
+                posix_spawn_file_actions_addopen(
+                    &actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+            }
             assert(posix_spawnp(&job.pid, exe_path, &actions, NULL, argv, environ) == 0
                 && "posix_spawn train failed");
             posix_spawn_file_actions_destroy(&actions);
@@ -2830,6 +3055,10 @@ void run_sweep(Ini* ini, const char* exe_path) {
                 job->run);
             protein_sweep_observe(protein, job->sample, NAN, max_cost, 1);
             assert(++failed_workers <= 1000 && "too many failed sweep workers");
+            if (tb.fp) {
+                sweep_tb_trial(&tb, ++tb_trials, job, NULL, params, space,
+                    failed_workers, best_score);
+            }
             continue;
         }
         // points[]: learning-curve downsample, or 1 final score (e.g. selfplay).
@@ -2841,7 +3070,16 @@ void run_sweep(Ini* ini, const char* exe_path) {
             job->run, job->result.score, job->result.cost, job->result.steps,
             job->random, job->gp_obs, job->pareto);
         completed++;
+        if (tb.fp) {
+            float s = job->result.score;
+            if (isfinite(s) && (!isfinite(best_score) || direction * (s - best_score) > 0)) {
+                best_score = s;
+            }
+            sweep_tb_trial(&tb, ++tb_trials, job, &job->result, params, space,
+                failed_workers, best_score);
+        }
     }
+    tb_close(&tb);
 }
 
 // Sweep objective: bare names → env/<name>; keys with '/' used as-is.
@@ -3032,6 +3270,33 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         mkdir_p(checkpoint_dir);
         mkdir_p(log_dir);
     }
+    TbLog tb = {0};
+    char sweep_id[64];
+    int sweep_tb = sweep_tb_id(ini, sweep_id, sizeof(sweep_id));
+    if (ctx->artifact_owner && puf_ini_get(ini, "base", "tensorboard")) {
+        char tb_run[192];
+        snprintf(tb_run, sizeof(tb_run), "%s%s%s",
+            sweep_tb ? sweep_id : "", sweep_tb ? "/" : "", run_id);
+        tb_open_run(&tb, ini, log_dir, tb_run);
+    }
+    if (tb.fp && sweep_tb) {
+        SweepParam* hp = (SweepParam*)calloc(ini->num_sections, sizeof(SweepParam));
+        const char** names = (const char**)calloc(ini->num_sections, sizeof(char*));
+        double* values = (double*)calloc(ini->num_sections, sizeof(double));
+        int n = 0;
+        for (int i = 0; i < ini->num_sections; i++) {
+            if (strncmp(ini->sections[i].name, "sweep.", 6) == 0) {
+                sweep_param_parse(ini->sections[i].name, &hp[n]);
+                names[n] = hp[n].name;
+                values[n] = puf_ini_get(ini, hp[n].section, hp[n].key);
+                n++;
+            }
+        }
+        tb_hparams_session_start(&tb, names, values, n);
+        free(hp);
+        free(names);
+        free(values);
+    }
 
     PuffeRL* pufferl = create_pufferl(ini, ctx);
     Selfplay selfplay = {0};
@@ -3218,6 +3483,9 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         if (episodes && dict_find(&new_log, target_key)) {
             puf_log_history_add(&log_history, &last_log);
         }
+        if (tb.fp && episodes) {
+            tb_scalars(&tb, (long)result.steps, &new_log);
+        }
         dict_clear(&new_log);
     }
 
@@ -3401,11 +3669,21 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         }
         fclose(fp);
     }
+    if (tb.fp && sweep_tb) {
+        Dict d = {0};
+        dict_set(&d, "sweep/score", result.score);
+        dict_set(&d, "sweep/cost", result.cost);
+        dict_set(&d, "sweep/steps", result.steps);
+        tb_scalars(&tb, (long)result.steps, &d);
+        dict_clear(&d);
+        tb_hparams_session_end(&tb, TB_STATUS_SUCCESS);
+    }
     for (int i = 0; i < log_history.size; i++) {
         dict_clear(&log_history.items[i]);
     }
     free(log_history.items);
     free(selfplay.pool);
+    tb_close(&tb);
     return result;
 }
 

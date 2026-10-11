@@ -4,73 +4,69 @@
 #include <math.h>
 
 #include "raylib.h"
+#ifdef POKERED_OBS_U8
+typedef unsigned char obs_t;
+#else
 typedef float obs_t;
+#endif
 #include "pufferenv.h"
 
-#include "includes/ram_map.h"
-#include "includes/events.h"
+#include "data/ram_map.h"
+#include "data/events.h"
+#include "data/utils.h"
 #include "pokered_stream.h"
-
-#include "pokered_layout.h"
-#include "pokered_backend.h"
-
-#define MAX_MAPS 256
-#define MAX_X 128
-#define MAX_Y 128
-#define VISITED_COORDS_SIZE (MAX_MAPS * MAX_X * MAX_Y)
-#define VISITED_BYTES (VISITED_COORDS_SIZE / 8)
+#include "backend/backend.h"
+#include "backend/pksnapshot.h"
+#include "pokered_items.h"
 
 #define ACT_SIZES {PKRED_ACTION_COUNT}
-#define OBS_SIZE TOTAL_OBSERVATIONS
 #define NUM_ATNS 1
+
+static int g_pokered_obs_tiles = -1;
+static inline int pokered_obs_size(void) {
+    return g_pokered_obs_tiles > 0 ? TILES_TOTAL_OBSERVATIONS : SCREEN_TOTAL_OBSERVATIONS;
+}
+#define OBS_SIZE pokered_obs_size()
+
+#define PK_REWARD_SIGNALS(X)                                       \
+    X(explore, signal_exploration, "weight_exploration", 0, 1)    \
+    X(catching, signal_catching, "weight_catching", 0, 1)          \
+    X(seeing, signal_seeing, "weight_seeing", 0, 1)                \
+    X(leveling, signal_leveling, "weight_leveling", 0, 1)          \
+    X(events, signal_events, "weight_events", 0, 1)                \
+    X(battling, signal_battling, "weight_battling", 0, 1)          \
+    X(death, signal_none, "weight_death", 1, 0)                    \
+    X(fleeing, signal_fleeing, "weight_fleeing", 1, 1)             \
+    X(healing, signal_healing, "weight_healing", 0, 1)             \
+    X(item_used, signal_item_used, "weight_item_used", 0, 1)
+
+#define PK_SIG_FIELD(name, fn, key, penalty, summed) float name;
+#define PK_SIG_ENUM(name, fn, key, penalty, summed) PK_SIG_##name,
+typedef struct {
+    PK_REWARD_SIGNALS(PK_SIG_FIELD)
+} RewardTotals;
+enum { PK_REWARD_SIGNALS(PK_SIG_ENUM) PK_SIG_COUNT };
 
 struct Log {
     float episode_length;
     float episode_return;
-    float money;
+    float perf;
     float level_sum;
-    float pkmn1_lvl;
-    float pkmn2_lvl;
-    float pkmn3_lvl;
-    float pkmn4_lvl;
-    float pkmn5_lvl;
-    float pkmn6_lvl;
+    float pkmn_lvl[PARTY_SIZE];
     float party_count;
     float badges;
     float event_sum;
+    float progress;
+    float progress_gained;
     float unique_coords;
     float map_exhaustion;
     float pokedex_owned;
     float pokedex_seen;
-    float explore_signal;
-    float catching_signal;
-    float seeing_signal;
-    float events_signal;
-    float leveling_signal;
-    float healing_signal;
-    float hm_learned_signal;
-    float pokecenter_signal;
-    float pokecenter_visit_signal;
-    float run_signal;
-    float death_signal;
+    RewardTotals reward;
     float milestone_pool_size;
     float reset_from_milestone;
     float n;
 };
-
-typedef struct {
-    float total_explore_signal;
-    float total_catching_signal;
-    float total_seeing_signal;
-    float total_events_signal;
-    float total_leveling_signal;
-    float total_healing_signal;
-    float total_hm_learned_signal;
-    float total_pokecenter_signal;
-    float total_pokecenter_visit_signal;
-    float total_run_signal;
-    float total_death_signal;
-} EpisodeStats;
 
 struct Env {
     Log log;
@@ -84,250 +80,362 @@ struct Env {
     void *impl;
     PkSnapshot cur;
     PkSnapshot prev;
-    EpisodeStats stats;
+    PkEventTracker tracker;
+    PkScenario scenario;
+
+    int32_t step_count;
+    float score;
+    int progress_start;
+    int prev_action;
+    RewardTotals totals;
     PokeredStream stream;
 
     uint8_t *visited_coords;
-    uint16_t *map_visited_counts;
     uint8_t *visited_cells;
-    uint8_t *prev_events;
-
-    int32_t step_count;
-    long total_agent_steps;
-    int32_t max_episode_length;
-    float prev_event_sum;
+    uint16_t *map_visited_counts;
     uint32_t unique_coords_count;
-    float score;
-    int prev_action;
-    bool party_wiped;
+    uint8_t *prev_events;
+    uint8_t *paid_events;
+    uint8_t event_skip[PK_EVENT_FLAG_BYTES];
+    bool event_reward_once;
+    bool start_select_enabled;
 
-    bool full_reset;
-    float full_reset_prob;
-    int full_reset_min_blackouts;
-    int blackout_count;
-    bool stuck_reset_enabled;
-    int32_t stuck_reset_steps;
-    int32_t steps_since_new_tile;
-    bool verbose;
-    bool reset_from_milestone;
-    uint8_t hm_rewarded_mask;
+    PkEpisode episode;
 
-    bool screen_obs_enabled;
-    bool map_exhaustion_obs_enabled;
-    float map_exhaustion_norm;
+    float weight[PK_SIG_COUNT];
+    bool hm_used_once;
+    float healing_health_left;
+    float healing_pp_left;
+    uint8_t hm_used_mask;
+    bool hm_taught_once;
+    uint8_t hm_taught_mask;
+    bool item_used_consumables_enabled;
+    bool item_used_key_items_enabled;
+    uint8_t key_item_mask;
+    PkItemUse item_use;
+    bool tm_taught_enabled;
+    uint64_t tm_pending;
+    int tm_pending_steps;
     int exploration_cell_size;
-    long weight_exploration_anneal_start;
-    long weight_exploration_anneal_end;
     bool exploration_death_scaling_enabled;
 
-    float weight_exploration;
-    float weight_catching;
-    float weight_seeing;
-    float weight_events;
-    float weight_leveling;
-    float weight_healing;
-    float weight_hm_learned;
-    float weight_pokecenter;
-    float weight_pokecenter_visit;
-    float weight_run;
-    int pokecenter_visit_steps;
-    int pokecenter_visit_step;
-    float weight_time;
-    float weight_death;
+    bool screen_obs_enabled;
+    bool obs_tiles;
+    bool obs_info_enabled;
+    bool obs_walkable_enabled;
+    bool obs_sprite_ids_enabled;
+    bool obs_mon_detail_enabled;
+    bool obs_item_context_enabled;
+    float map_exhaustion_norm;
 
+    bool verbose;
+
+    float *screen_buf;
     Texture2D render_texture;
     uint8_t *render_pixels;
     bool show_obs_view;
 };
 typedef Env Pokered;
 
-static inline uint32_t coord_index(uint8_t map, uint8_t x, uint8_t y) {
-    uint32_t cx = x < MAX_X ? x : MAX_X - 1;
-    uint32_t cy = y < MAX_Y ? y : MAX_Y - 1;
-    return (uint32_t)map * (MAX_X * MAX_Y) + cx * MAX_Y + cy;
-}
-static inline bool vbit_get(const uint8_t *bits, uint32_t idx) {
-    return (bits[idx >> 3] >> (idx & 7)) & 1;
-}
-
-static inline bool vbit_test_set(uint8_t *bits, uint32_t idx) {
-    uint8_t mask = (uint8_t)(1u << (idx & 7));
-    if (bits[idx >> 3] & mask)
-        return false;
-    bits[idx >> 3] |= mask;
-    return true;
-}
 static inline bool is_directional_action(int action) {
     return action >= PKRED_ACTION_RIGHT && action <= PKRED_ACTION_DOWN;
 }
 
-#include "pokered_observations.h"
-#include "pokered_rewards.h"
-
-static void add_log(Env *env) {
-    const PkSnapshot *core = &env->cur;
-
-    env->log.episode_length = env->step_count;
-    env->log.episode_return = env->score;
-    env->log.death_signal = env->stats.total_death_signal;
-    env->log.money = core->money;
-
-    env->log.level_sum = calc_level_sum(core);
-    for (int i = 0; i < 6; i++)
-        (&env->log.pkmn1_lvl)[i] = core->party[i].level;
-    env->log.party_count = core->party_count;
-
-    env->log.badges = core->badges;
-    env->log.event_sum = env->prev_event_sum;
-    env->log.unique_coords = env->unique_coords_count;
-    env->log.map_exhaustion = env->map_exhaustion_obs_enabled
-        ? fminf(1.0f, (float)env->map_visited_counts[core->map_n] / env->map_exhaustion_norm)
-        : 0.0f;
-    env->log.pokedex_owned = core->pokedex_owned_count;
-    env->log.pokedex_seen = core->pokedex_seen_count;
-
-    env->log.explore_signal = env->stats.total_explore_signal;
-    env->log.catching_signal = env->stats.total_catching_signal;
-    env->log.seeing_signal = env->stats.total_seeing_signal;
-    env->log.events_signal = env->stats.total_events_signal;
-    env->log.leveling_signal = env->stats.total_leveling_signal;
-    env->log.healing_signal = env->stats.total_healing_signal;
-    env->log.hm_learned_signal = env->stats.total_hm_learned_signal;
-    env->log.pokecenter_signal = env->stats.total_pokecenter_signal;
-    env->log.pokecenter_visit_signal = env->stats.total_pokecenter_visit_signal;
-    env->log.run_signal = env->stats.total_run_signal;
-    env->log.milestone_pool_size = env->be->milestone_pool_size ? (float)env->be->milestone_pool_size() : 0.0f;
-    env->log.reset_from_milestone = env->reset_from_milestone ? 1.0f : 0.0f;
-    env->log.n++;
+static PkRam env_ram(Env *env) {
+    PkRam ram = {env->impl, env->be->peek, env->be->poke};
+    return ram;
 }
 
-void puf_init(Env* env, Dict* kwargs) {
-    unsigned int env_id = env->rng;
+static void env_snapshot(Env *env) {
+    env->be->snapshot(env->impl, &env->cur);
+    pk_events_apply(&env->tracker, &env->cur);
+}
 
+static void env_rebase(Env *env, bool clear_cut) {
+    pk_events_rebase(&env->tracker);
+    if (clear_cut) {
+        PkRam ram = env_ram(env);
+        pk_ram_clear_cut(&ram, &env->tracker);
+    }
+}
+
+static bool env_state_load(Env *env, const void *buf) {
+    if (!env->be->state_load(env->impl, buf))
+        return false;
+    env_rebase(env, true);
+    return true;
+}
+
+static void env_try_milestone_start(Env *env) {
+    const uint8_t *blob = pk_episode_pick_milestone(&env->episode, &env->rng);
+    if (blob && env_state_load(env, blob))
+        env->episode.from_milestone = true;
+}
+
+static void env_capture_milestones(Env *env) {
+    pk_episode_capture(&env->episode, &env->cur, &env->prev, env->be, env->impl, &env->rng, env->verbose);
+}
+
+static void env_advance(Env *env, int action) {
+    PkRam ram = env_ram(env);
+    pk_ram_apply_scenario(&ram, &env->scenario, &env->cur);
+    env->be->step(env->impl, pk_action_buttons(action));
+    pk_ram_track_cut(&ram, &env->tracker, &env->cur);
+    pk_events_stepped(&env->tracker);
+}
+
+#include "pokered_obs.h"
+#include "pokered_rew.h"
+#include "pokered_progress.h"
+
+static void clear_visited(Env *env) {
+    env->unique_coords_count = 0;
+    memset(env->visited_coords, 0, VISITED_BYTES);
+    memset(env->visited_cells, 0, VISITED_BYTES);
+    memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
+}
+
+static void add_log(Env *env) {
+    const PkSnapshot *s = &env->cur;
+    Log *log = &env->log;
+
+    log->episode_length += env->step_count;
+    log->episode_return += env->score;
+    log->perf += env->score;
+#define PK_SIG_ADD(name, fn, key, penalty, summed) log->reward.name += env->totals.name;
+    PK_REWARD_SIGNALS(PK_SIG_ADD)
+#undef PK_SIG_ADD
+    log->level_sum += party_level_sum(s);
+    for (int i = 0; i < PARTY_SIZE; i++)
+        log->pkmn_lvl[i] += s->party[i].level;
+    log->party_count += s->party_count;
+    log->badges += __builtin_popcount(s->badges);
+    log->event_sum += completed_event_count(s);
+    int progress = pk_progress(s);
+    log->progress += progress;
+    log->progress_gained += progress - env->progress_start;
+    log->unique_coords += env->unique_coords_count;
+    log->map_exhaustion +=
+        fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
+    log->pokedex_owned += s->pokedex_owned_count;
+    log->pokedex_seen += s->pokedex_seen_count;
+    log->milestone_pool_size += env->episode.milestones_enabled ? (float)pk_pool_slots_filled(env->episode.pool) : 0.0f;
+    log->reset_from_milestone += env->episode.from_milestone ? 1.0f : 0.0f;
+    log->n++;
+}
+
+static bool kw_bool(Dict *kw, const char *key) { return dict_get(kw, key) != 0.0; }
+static int kw_int(Dict *kw, const char *key) { return (int)dict_get(kw, key); }
+static float kw_float(Dict *kw, const char *key) { return (float)dict_get(kw, key); }
+
+static const char *kw_str(Dict *kw, const char *key, const char *fallback) {
+    DictItem *item = dict_find(kw, key);
+    return item && item->str && item->str[0] ? item->str : fallback;
+}
+
+static void copy_str(char *dst, size_t cap, const char *src) {
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+}
+
+static float read_signal_weight(Dict *kw, const char *key, int sig, bool penalty) {
+    static bool warned[PK_SIG_COUNT];
+    float w = kw_float(kw, key);
+    if (!penalty)
+        return w;
+    if (w > 0.0f && !warned[sig]) {
+        warned[sig] = true;
+        fprintf(stderr, "pokered: %s = %g is a penalty; using %g (write it negative in the ini)\n", key, w, -w);
+    }
+    return -fabsf(w);
+}
+
+static void read_reward_config(Env *env, Dict *kw) {
+#define PK_SIG_READ(name, fn, key, penalty, summed) \
+    env->weight[PK_SIG_##name] = read_signal_weight(kw, key, PK_SIG_##name, penalty);
+    PK_REWARD_SIGNALS(PK_SIG_READ)
+#undef PK_SIG_READ
+    env->hm_used_once = kw_bool(kw, "hm_used_once");
+    env->tm_taught_enabled = kw_bool(kw, "tm_taught_enabled");
+    env->hm_taught_once = kw_bool(kw, "hm_taught_once");
+    env->item_used_consumables_enabled = kw_bool(kw, "item_used_consumables_enabled");
+    env->item_used_key_items_enabled = kw_bool(kw, "item_used_key_items_enabled");
+    memset(env->event_skip, 0, sizeof(env->event_skip));
+    if (env->item_used_key_items_enabled) {
+        env->event_skip[PKRED_ADDR_ROUTE12_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE12_SNORLAX_BIT;
+        env->event_skip[PKRED_ADDR_ROUTE16_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE16_SNORLAX_BIT;
+    }
+    env->healing_health_left = kw_float(kw, "healing_health_left");
+    env->healing_pp_left = kw_float(kw, "healing_pp_left");
+    if (env->healing_health_left < 0.0f || env->healing_health_left > 1.0f || env->healing_pp_left < 0.0f ||
+        env->healing_pp_left > 1.0f) {
+        fprintf(stderr, "pokered: healing_health_left and healing_pp_left must be in [0, 1]\n");
+        exit(1);
+    }
+    env->event_reward_once = kw_bool(kw, "event_reward_once");
+    env->start_select_enabled = kw_bool(kw, "start_select_enabled");
+    env->exploration_cell_size = kw_int(kw, "exploration_cell_size");
+    if (env->exploration_cell_size <= 0)
+        env->exploration_cell_size = 1;
+    env->exploration_death_scaling_enabled = kw_bool(kw, "exploration_death_scaling_enabled");
+}
+
+static bool pokered_set_obs_mode(Dict *kw) {
+    const char *mode = kw_str(kw, "obs_mode", "screen");
+    if (strcmp(mode, "screen") && strcmp(mode, "tiles")) {
+        fprintf(stderr, "pokered: obs_mode must be \"screen\" or \"tiles\", got \"%s\"\n", mode);
+        exit(1);
+    }
+    bool tiles = !strcmp(mode, "tiles");
+    if (g_pokered_obs_tiles >= 0 && g_pokered_obs_tiles != (int)tiles) {
+        fprintf(stderr, "pokered: every env in a process must use the same obs_mode\n");
+        exit(1);
+    }
+    g_pokered_obs_tiles = tiles;
+    return tiles;
+}
+
+#define PUF_ENV_PREINIT(kw) pokered_set_obs_mode(kw)
+
+static void read_observation_config(Env *env, Dict *kw) {
+    env->screen_obs_enabled = kw_bool(kw, "screen_obs_enabled");
+    env->obs_tiles = pokered_set_obs_mode(kw);
+    env->obs_info_enabled = kw_bool(kw, "obs_info_enabled");
+    env->obs_walkable_enabled = kw_bool(kw, "obs_walkable_enabled");
+    env->obs_sprite_ids_enabled = kw_bool(kw, "obs_sprite_ids_enabled");
+    env->obs_mon_detail_enabled = kw_bool(kw, "obs_mon_detail_enabled");
+    env->obs_item_context_enabled = kw_bool(kw, "obs_item_context_enabled");
+    env->map_exhaustion_norm = kw_float(kw, "map_exhaustion_norm");
+    if (env->map_exhaustion_norm <= 0.0f)
+        env->map_exhaustion_norm = 1.0f;
+}
+
+static void read_episode_config(Env *env, Dict *kw) {
+    PkEpisode *ep = &env->episode;
+    ep->max_length = (int32_t)dict_get(kw, "max_episode_length");
+    ep->full_reset = kw_bool(kw, "full_reset");
+    env->verbose = kw_bool(kw, "verbose");
+    ep->milestones_enabled = kw_bool(kw, "milestones_enabled");
+    ep->milestone_reset_prob = kw_float(kw, "milestone_reset_prob");
+    ep->milestone_states_per_slot = kw_int(kw, "milestone_states_per_slot");
+    ep->milestone_progress_bias = kw_float(kw, "milestone_progress_bias");
+}
+
+static bool dict_lookup(void *ctx, const char *key, double *num, const char **str) {
+    DictItem *item = dict_find((Dict *)ctx, key);
+    if (!item)
+        return false;
+    if (num) *num = item->value;
+    if (str) *str = item->str;
+    return true;
+}
+
+static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
+    memset(bc, 0, sizeof(*bc));
+    bc->env_id = env->rng;
+    bc->verbose = env->verbose;
+    bc->screen_obs_enabled = env->screen_obs_enabled && !env->obs_tiles;
+
+    bc->frameskip = kw_int(kw, "frameskip");
+    bc->press_frames = kw_int(kw, "press_frames");
+    bc->headless = kw_bool(kw, "headless");
+
+    copy_str(bc->rom_path, sizeof(bc->rom_path), dict_get_str(kw, "rom_path"));
+    copy_str(bc->state_path, sizeof(bc->state_path), kw_str(kw, "state_path", ""));
+    bc->pkstate_cache_enabled = kw_bool(kw, "pkstate_cache_enabled");
+}
+
+static void read_scenario_config(Env *env, Dict *kw) {
+    env->scenario.disable_wild_until_badge = kw_bool(kw, "disable_wild_until_badge");
+    env->scenario.route22_rival_beaten = kw_bool(kw, "route22_rival_beaten");
+    env->scenario.route22_rival_2nd_beaten = kw_bool(kw, "route22_rival_2nd_beaten");
+    int text_speed = kw_int(kw, "text_speed"), animation = kw_int(kw, "battle_animation"),
+        style = kw_int(kw, "battle_style");
+    if (text_speed < 0 || text_speed > 3 || animation < 0 || animation > 2 || style < 0 || style > 2) {
+        fprintf(stderr, "pokered: text_speed (0-3), battle_animation (0-2) or battle_style (0-2) out of range\n");
+        exit(1);
+    }
+    env->scenario.text_speed = (uint8_t)text_speed;
+    env->scenario.battle_animation = (uint8_t)animation;
+    env->scenario.battle_style = (uint8_t)style;
+    env->scenario.rng_randomize_on_reset = kw_bool(kw, "rng_randomize_on_reset");
+}
+
+static const PkBackend *select_backend(Dict *kw) {
+    const char *name = kw_str(kw, "backend", "emulator");
+    const PkBackend *be = pk_backend_find(name);
+    if (!be) {
+        fprintf(stderr, "pokered: env.backend '%s' is not available; this build has:", name);
+        for (int i = 0; i < pk_backend_count(); i++)
+            fprintf(stderr, " %s", pk_backend_at(i)->name);
+        fprintf(stderr, "\n(a backend skipped with build.sh --no-<name> is not linked in)\n");
+        exit(1);
+    }
+
+    return be;
+}
+
+void puf_init(Env *env, Dict *kwargs) {
     env->num_agents = 1;
     env->agents[0].policy = 0;
     env->agents[0].action_mask = NULL;
 
+    read_episode_config(env, kwargs);
+    read_reward_config(env, kwargs);
+    read_observation_config(env, kwargs);
+    read_scenario_config(env, kwargs);
+
     PkBackendConfig bc;
-    memset(&bc, 0, sizeof(bc));
-    bc.env_id = env_id;
-    bc.frameskip = (int)dict_get(kwargs, "frameskip");
-    bc.press_frames = (int)dict_get(kwargs, "press_frames");
-    bc.headless = dict_get(kwargs, "headless") != 0.0;
-    env->max_episode_length = (int32_t)dict_get(kwargs, "max_episode_length");
-    env->full_reset = dict_get(kwargs, "full_reset") != 0.0;
-    env->full_reset_prob = (float)dict_get(kwargs, "full_reset_prob");
-    env->full_reset_min_blackouts = (int)dict_get(kwargs, "full_reset_min_blackouts");
-    env->stuck_reset_enabled = dict_get(kwargs, "stuck_reset_enabled") != 0.0;
-    env->stuck_reset_steps = (int32_t)dict_get(kwargs, "stuck_reset_steps");
-    bc.disable_wild_until_badge = dict_get(kwargs, "disable_wild_until_badge") != 0.0;
-    bc.route22_rival_beaten = dict_get(kwargs, "route22_rival_beaten") != 0.0;
-    bc.route22_rival_2nd_beaten = dict_get(kwargs, "route22_rival_2nd_beaten") != 0.0;
-    bc.nickname_prompt_enabled = dict_get(kwargs, "nickname_prompt_enabled") != 0.0;
-    bc.npc_text_enabled = dict_get(kwargs, "npc_text_enabled") != 0.0;
-    env->verbose = dict_get(kwargs, "verbose") != 0.0;
-    bc.verbose = env->verbose;
+    read_backend_config(env, kwargs, &bc);
+    PkOptions opts = {kwargs, dict_lookup};
+    env->be = select_backend(kwargs);
+    env->impl = env->be->create(&bc, &opts);
+    pk_episode_init(&env->episode, env->be);
 
-    env->weight_exploration = (float)dict_get(kwargs, "weight_exploration");
-    env->weight_catching = (float)dict_get(kwargs, "weight_catching");
-    env->weight_seeing = (float)dict_get(kwargs, "weight_seeing");
-    env->weight_events = (float)dict_get(kwargs, "weight_events");
-    env->weight_leveling = (float)dict_get(kwargs, "weight_leveling");
-    env->weight_healing = (float)dict_get(kwargs, "weight_healing");
-    env->weight_hm_learned = (float)dict_get(kwargs, "weight_hm_learned");
-    env->weight_pokecenter = (float)dict_get(kwargs, "weight_pokecenter");
-    env->weight_pokecenter_visit = (float)dict_get(kwargs, "weight_pokecenter_visit");
-    env->weight_run = (float)dict_get(kwargs, "weight_run");
-    env->pokecenter_visit_steps = (int)dict_get(kwargs, "pokecenter_visit_steps");
-    if (env->pokecenter_visit_steps <= 0)
-        env->pokecenter_visit_steps = 1;
-    env->weight_time = (float)dict_get(kwargs, "weight_time");
-    env->weight_death = (float)dict_get(kwargs, "weight_death");
-    bc.milestone_sample_prob = (float)dict_get(kwargs, "milestone_sample_prob");
-    bc.milestones_enabled = dict_get(kwargs, "milestones_enabled") != 0.0;
-    bc.event_milestones_enabled = dict_get(kwargs, "event_milestones_enabled") != 0.0;
-    bc.town_milestones_enabled = dict_get(kwargs, "town_milestones_enabled") != 0.0;
-    env->screen_obs_enabled = dict_get(kwargs, "screen_obs_enabled") != 0.0;
-    env->map_exhaustion_obs_enabled = dict_get(kwargs, "map_exhaustion_obs_enabled") != 0.0;
-    env->map_exhaustion_norm = (float)dict_get(kwargs, "map_exhaustion_norm");
-    if (env->map_exhaustion_norm <= 0.0f)
-        env->map_exhaustion_norm = 1.0f;
-    env->exploration_cell_size = (int)dict_get(kwargs, "exploration_cell_size");
-    if (env->exploration_cell_size <= 0)
-        env->exploration_cell_size = 1;
-    env->weight_exploration_anneal_start = (long)dict_get(kwargs, "weight_exploration_anneal_start");
-    env->weight_exploration_anneal_end = (long)dict_get(kwargs, "weight_exploration_anneal_end");
-    env->exploration_death_scaling_enabled = dict_get(kwargs, "exploration_death_scaling_enabled") != 0.0;
-
-    DictItem* sp = dict_find(kwargs, "state_path");
-    if (sp && sp->str && sp->str[0]) {
-        strncpy(bc.state_path, sp->str, sizeof(bc.state_path) - 1);
-    }
-    strncpy(bc.rom_path, dict_get_str(kwargs, "rom_path"), sizeof(bc.rom_path) - 1);
-    bc.audio_enabled = dict_get(kwargs, "audio_enabled") != 0.0;
-    bc.frame_render_skip_enabled = dict_get(kwargs, "frame_render_skip_enabled") != 0.0;
-    DictItem* nt = dict_find(kwargs, "vec_num_threads");
-    bc.vec_num_threads = nt ? (int)nt->value : 1;
-
-    bc.screen_obs_enabled = env->screen_obs_enabled;
-    DictItem* fs = dict_find(kwargs, "fixed_starter_species");
-    bc.fixed_starter_species = fs ? (int)fs->value : 0;
-    DictItem* ad = dict_find(kwargs, "assets_dir");
-    strncpy(bc.assets_dir, ad && ad->str && ad->str[0] ? ad->str : "vendor/redcore/assets", sizeof(bc.assets_dir) - 1);
-
-    DictItem* bk = dict_find(kwargs, "backend");
-    const char* backend = bk && bk->str && bk->str[0] ? bk->str : "emulator";
-    if (strcmp(backend, "emulator") == 0) {
-        env->be = pk_backend_emulator();
-    } else if (strcmp(backend, "redcore") == 0) {
-        env->be = pk_backend_redcore();
-        if (!env->be) {
-            fprintf(stderr, "pokered: built with --no-redcore; env.backend=redcore is unavailable\n");
-            exit(1);
-        }
-    } else {
-        fprintf(stderr, "pokered: unknown env.backend '%s' (expected emulator or redcore)\n", backend);
-        exit(1);
-    }
-    env->impl = env->be->create(&bc);
-
-    env->visited_coords = (uint8_t*)calloc(VISITED_BYTES, 1);
-    env->visited_cells = (uint8_t*)calloc(VISITED_BYTES, 1);
-    env->map_visited_counts = (uint16_t*)calloc(MAX_MAPS, sizeof(uint16_t));
-    env->prev_events = (uint8_t*)calloc(EVENT_COUNT, sizeof(uint8_t));
+    env->visited_coords = (uint8_t *)calloc(VISITED_BYTES, 1);
+    env->visited_cells = (uint8_t *)calloc(VISITED_BYTES, 1);
+    env->map_visited_counts = (uint16_t *)calloc(MAX_MAPS, sizeof(uint16_t));
+    env->prev_events = (uint8_t *)calloc(PK_EVENT_FLAG_BYTES, 1);
+    env->paid_events = (uint8_t *)calloc(PK_EVENT_FLAG_BYTES, 1);
+    pk_events_table_init();
     env->prev_action = -1;
 
-    bool stream_enabled = dict_get(kwargs, "stream_enabled") != 0.0;
-    int stream_interval = (int)dict_get(kwargs, "stream_interval");
-    const char* stream_user = "User";
-    DictItem* su = dict_find(kwargs, "stream_user");
-    if (su && su->str && su->str[0]) stream_user = su->str;
-    const char* stream_color = "#0000FF";
-    DictItem* sc = dict_find(kwargs, "stream_color");
-    if (sc && sc->str && sc->str[0]) stream_color = sc->str;
-    stream_init(&env->stream, stream_enabled, stream_user, stream_color, env_id, stream_interval);
+    StreamConfig sc;
+    sc.enabled = kw_bool(kwargs, "stream_enabled");
+    sc.async = kw_bool(kwargs, "stream_async");
+    sc.interval = kw_int(kwargs, "stream_interval");
+    sc.connections = kw_int(kwargs, "stream_connections");
+    sc.queue_mb = kw_int(kwargs, "stream_queue_mb");
+    sc.user = kw_str(kwargs, "stream_user", "User");
+    sc.color = kw_str(kwargs, "stream_color", "#0000FF");
+    stream_init(&env->stream, &sc);
 }
 
-static void clear_visited(Env* env) {
-    env->unique_coords_count = 0;
-    memset(env->visited_coords, 0, VISITED_BYTES);
-    memset(env->visited_cells, 0, VISITED_BYTES);
+static void update_action_mask(Env *env) {
+    unsigned char *mask = env->agents[0].action_mask;
+    if (!mask)
+        return;
+    mask[PKRED_ACTION_START] = env->start_select_enabled;
+    mask[PKRED_ACTION_SELECT] = env->start_select_enabled;
 }
 
-static void puf_reset_body(Env* env, bool do_full_reset) {
-    bool full = env->full_reset && do_full_reset;
-    env->reset_from_milestone = full ? false : env->reset_from_milestone;
-    if (full)
+static void puf_reset_body(Env *env, bool do_full_reset) {
+    bool full = env->episode.full_reset && do_full_reset;
+    if (full) {
+        env->episode.from_milestone = false;
         clear_visited(env);
-    env->be->reset(env->impl, full, &env->rng, &env->reset_from_milestone);
-    if (full)
-        env->blackout_count = 0;
+    }
+    env->be->reset(env->impl, full);
+    env_rebase(env, full);
+    if (full) {
+        env_try_milestone_start(env);
+        PkRam ram = env_ram(env);
+        pk_ram_prepare_start(&ram, &env->scenario, &env->rng);
+        env->episode.blackouts = 0;
+    }
 
     memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
-    env->hm_rewarded_mask = 0;
-    env->pokecenter_visit_step = -1;
-    env->steps_since_new_tile = 0;
-    env->be->snapshot(env->impl, &env->cur);
+    env_snapshot(env);
     env->prev = env->cur;
     update_observations(env);
 
@@ -335,119 +443,246 @@ static void puf_reset_body(Env* env, bool do_full_reset) {
     env->agents[0].terminals[0] = 0;
     env->step_count = 0;
     env->score = 0.0f;
+    env->progress_start = pk_progress(&env->cur);
     env->prev_action = -1;
-    env->party_wiped = false;
-    env->prev_event_sum = event_weighted_sum(env->cur.events);
-    memset(&env->stats, 0, sizeof(EpisodeStats));
-    for (size_t i = 0; i < EVENT_COUNT; ++i)
-        env->prev_events[i] = env->cur.events[i];
+    env->hm_used_mask = 0;
+    env->hm_taught_mask = 0;
+    env->key_item_mask = 0;
+    memset(&env->item_use, 0, sizeof(env->item_use));
+    env->tm_pending = 0;
+    env->tm_pending_steps = 0;
+    memset(&env->totals, 0, sizeof(env->totals));
+    memcpy(env->prev_events, env->cur.event_flags, PK_EVENT_FLAG_BYTES);
+    memcpy(env->paid_events, env->cur.event_flags, PK_EVENT_FLAG_BYTES);
 
     env->be->warmup(env->impl);
+    update_action_mask(env);
 }
-void puf_reset(Env* env) {
+
+void puf_reset(Env *env) {
     env->be->acquire(env->impl);
     puf_reset_body(env, true);
     env->be->release(env->impl);
 }
 
-static void puf_step_body(Env* env) {
+static void end_episode(Env *env) {
+    add_log(env);
+    float reward = env->agents[0].rewards[0];
+    puf_reset_body(env, true);
+    env->agents[0].rewards[0] = reward;
+    env->agents[0].terminals[0] = 1;
+}
+
+static void handle_blackout(Env *env) {
+    float w = env->weight[PK_SIG_death];
+    env->agents[0].rewards[0] += w;
+    env->score += w;
+    env->totals.death += w;
+    env->episode.blackouts++;
+    clear_visited(env);
+}
+
+static void puf_step_body(Env *env) {
     env->agents[0].rewards[0] = 0;
     env->agents[0].terminals[0] = 0;
     env->step_count++;
-    env->total_agent_steps++;
 
     env->prev_action = (int)env->agents[0].actions[0];
-    env->be->step(env->impl, env->prev_action, &env->cur);
+    if (!env->start_select_enabled && env->prev_action >= PKRED_ACTION_START)
+        env->prev_action = -1;
+    env_advance(env, env->prev_action);
+    env_snapshot(env);
+    env_capture_milestones(env);
 
-    uint32_t coords_before_step = env->unique_coords_count;
     float reward = calculate_rewards(env);
-    if (env->unique_coords_count > coords_before_step) {
-        env->steps_since_new_tile = 0;
-    } else {
-        env->steps_since_new_tile++;
-    }
     update_observations(env);
+    update_action_mask(env);
     env->agents[0].rewards[0] = reward;
     env->score += reward;
 
     stream_collect(&env->stream, env->cur.x, env->cur.y, env->cur.map_n);
-    if (env->stream.interval > 0 && env->step_count % env->stream.interval == 0) {
+    if (env->stream.interval > 0 && env->step_count % env->stream.interval == 0)
         stream_flush(&env->stream);
-    }
 
-    bool party_alive = env->cur.party_count == 0 || env->cur.hp_fraction > 0.0f;
-    bool died_this_step = false;
-    if (party_alive) {
-        env->party_wiped = false;
-    } else if (!env->party_wiped) {
-        env->party_wiped = true;
-        died_this_step = true;
-    }
+    if (env->cur.step_events & PK_EV_BLACKOUT)
+        handle_blackout(env);
 
-    if (died_this_step) {
-        env->agents[0].rewards[0] -= env->weight_death;
-        env->score -= env->weight_death;
-        clear_visited(env);
-        memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
-        env->stats.total_death_signal += env->weight_death;
-        env->blackout_count++;
-        bool roll_full_reset = env->full_reset &&
-            env->blackout_count >= env->full_reset_min_blackouts &&
-            (env->full_reset_prob >= 1.0f ||
-             (float)rand_r(&env->rng) / (float)RAND_MAX < env->full_reset_prob);
-        if (roll_full_reset) {
-            env->agents[0].terminals[0] = 1;
-            add_log(env);
-            puf_reset_body(env, true);
-        } else if (env->be->blackout) {
-
-            env->be->blackout(env->impl);
-            env->party_wiped = false;
-            env->be->snapshot(env->impl, &env->cur);
-            env->prev = env->cur;
-            update_observations(env);
-        }
-    }
-
-    if (!env->agents[0].terminals[0] && env->stuck_reset_enabled &&
-        env->stuck_reset_steps > 0 && env->steps_since_new_tile >= env->stuck_reset_steps) {
-
-        env->agents[0].terminals[0] = 1;
-        add_log(env);
-        puf_reset_body(env, true);
-    }
-
-    if (!env->agents[0].terminals[0] &&
-        env->max_episode_length > 0 && env->step_count >= env->max_episode_length) {
-        env->agents[0].terminals[0] = 1;
-        add_log(env);
-        puf_reset_body(env, false);
-    }
+    if (env->episode.max_length > 0 && env->step_count >= env->episode.max_length)
+        end_episode(env);
 }
-void puf_step(Env* env) {
+
+void puf_step(Env *env) {
     env->be->acquire(env->impl);
     puf_step_body(env);
     env->be->release(env->impl);
 }
 
+static void render_init(Env* env, int width, int height, unsigned flags) {
+    SetTraceLogLevel(LOG_WARNING);
+    if (flags)
+        SetConfigFlags(flags);
+    InitWindow(width, height, "PufferLib Pokemon Red");
+    SetTargetFPS(60);
+    Image img = GenImageColor(PK_FRAME_W, PK_FRAME_H, BLACK);
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    env->render_texture = LoadTextureFromImage(img);
+    UnloadImage(img);
+}
+
+static void obs_view_screen(Env* env, const obs_t* obs) {
+    for (int sy = 0; sy < SCALED_HEIGHT; sy++) {
+        for (int sx = 0; sx < SCALED_WIDTH; sx++) {
+            uint8_t gray = (uint8_t)obs[SCREEN_OBS_OFFSET + sy * SCALED_WIDTH + sx];
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    int x = sx * 2 + dx;
+                    int y = sy * 2 + dy;
+                    uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
+                    out[0] = gray;
+                    out[1] = gray;
+                    out[2] = gray;
+                    out[3] = 255;
+                }
+            }
+        }
+    }
+}
+
+static Color tile_view_color(int tile) {
+    if (tile == PKRED_TILE_BLANK)
+        return WHITE;
+    float hue = fmodf((float)tile * 137.508f, 360.0f);
+    return ColorFromHSV(hue, 0.35f + 0.25f * (float)((tile >> 4) & 1), 0.95f - 0.25f * (float)((tile >> 5) & 1));
+}
+
+static void obs_view_tiles(Env* env, const obs_t* obs) {
+    for (int r = 0; r < PK_TILE_MAP_H; r++) {
+        for (int c = 0; c < PK_TILE_MAP_W; c++) {
+            int cell = r * PK_TILE_MAP_W + c;
+            Color col = tile_view_color((int)obs[TILE_OBS_OFFSET + cell]);
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    uint8_t* out = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
+                    bool grid = x == 7 || y == 7;
+                    out[0] = grid ? (uint8_t)(col.r * 3 / 4) : col.r;
+                    out[1] = grid ? (uint8_t)(col.g * 3 / 4) : col.g;
+                    out[2] = grid ? (uint8_t)(col.b * 3 / 4) : col.b;
+                    out[3] = 255;
+                }
+            }
+        }
+    }
+}
+
+static void obs_view_sprites(Env* env, const obs_t* obs) {
+    for (int cell = 0; cell < PK_TILE_MAP_CELLS; cell++) {
+        int r = cell / PK_TILE_MAP_W, c = cell % PK_TILE_MAP_W;
+        int sprite = (int)obs[SPRITE_OBS_OFFSET + cell];
+        if (!sprite) {
+            if (obs[WALKABLE_OBS_OFFSET + cell] == 0)
+                continue;
+            for (int y = 0; y < 8; y += 7)
+                for (int x = 0; x < 8; x++) {
+                    uint8_t* a = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
+                    uint8_t* b = &env->render_pixels[((r * 8 + x) * PK_FRAME_W + c * 8 + y) * 4];
+                    a[0] = b[0] = 0; a[1] = b[1] = 160; a[2] = b[2] = 255;
+                }
+            continue;
+        }
+        Color tint = ColorFromHSV(fmodf((float)sprite * 57.0f, 360.0f), 0.9f, 0.9f);
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                uint8_t* out = &env->render_pixels[((r * 8 + y) * PK_FRAME_W + c * 8 + x) * 4];
+                out[0] = (uint8_t)((out[0] + 2 * tint.r) / 3);
+                out[1] = (uint8_t)((out[1] + 2 * tint.g) / 3);
+                out[2] = (uint8_t)((out[2] + 2 * tint.b) / 3);
+            }
+        }
+    }
+}
+
+static void obs_view_visited(Env* env, const obs_t* obs) {
+    for (int by = 0; by < BLOCKS_TALL; by++) {
+        for (int bx = 0; bx < BLOCKS_WIDE; bx++) {
+            bool is_player = bx == PLAYER_BLOCK_COL && by == PLAYER_BLOCK_ROW;
+            bool visited = !is_player &&
+                obs[VISITED_MASK_OFFSET + by * BLOCKS_WIDE + bx] != 0.0f;
+            if (!visited && !is_player)
+                continue;
+            uint8_t tint_r = is_player ? 220 : 0;
+            uint8_t tint_g = is_player ? 40 : 200;
+            for (int py = 0; py < BLOCK_PIXELS; py++) {
+                for (int px = 0; px < BLOCK_PIXELS; px++) {
+                    int x = bx * BLOCK_PIXELS + px;
+                    int y = by * BLOCK_PIXELS + py;
+                    uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
+                    out[0] = (uint8_t)((out[0] + tint_r) / 2);
+                    out[1] = (uint8_t)((out[1] + tint_g) / 2);
+                    out[2] = (uint8_t)(out[2] / 2);
+                }
+            }
+        }
+    }
+}
+
+static void draw_tile_ids(Env* env, Rectangle dst) {
+    const obs_t* obs = env->agents[0].observations;
+    float cw = dst.width / PK_TILE_MAP_W, ch = dst.height / PK_TILE_MAP_H;
+    int font = (int)(ch * 0.4f);
+    if (font < 8)
+        return;
+    for (int r = 0; r < PK_TILE_MAP_H; r++) {
+        for (int c = 0; c < PK_TILE_MAP_W; c++) {
+            char label[4];
+            snprintf(label, sizeof(label), "%02X", (unsigned)obs[TILE_OBS_OFFSET + r * PK_TILE_MAP_W + c]);
+            const uint8_t* px = &env->render_pixels[((r * 8 + 3) * PK_FRAME_W + c * 8 + 3) * 4];
+            Color ink = px[0] * 77 + px[1] * 150 + px[2] * 29 > 128 * 256 ? BLACK : WHITE;
+            int w = MeasureText(label, font);
+            DrawText(label, (int)(dst.x + c * cw + (cw - w) / 2), (int)(dst.y + r * ch + (ch - font) / 2), font, ink);
+        }
+    }
+}
+
+static void render_draw(Env* env, Rectangle dst) {
+    if (!env->render_pixels) {
+        env->render_pixels = (uint8_t*)calloc(PK_FRAME_W * PK_FRAME_H * 4, 1);
+    }
+    bool obs_view = env->show_obs_view && env->agents[0].observations;
+    if (obs_view) {
+        const obs_t* obs = env->agents[0].observations;
+        if (env->obs_tiles)
+            obs_view_tiles(env, obs);
+        else
+            obs_view_screen(env, obs);
+        obs_view_visited(env, obs);
+        if (env->obs_tiles)
+            obs_view_sprites(env, obs);
+        UpdateTexture(env->render_texture, env->render_pixels);
+    } else if (env->be->frame_rgba(env->impl, env->render_pixels)) {
+        UpdateTexture(env->render_texture, env->render_pixels);
+    }
+    DrawTexturePro(env->render_texture, (Rectangle){0, 0, (float)PK_FRAME_W, (float)PK_FRAME_H}, dst,
+        (Vector2){0, 0}, 0.0f, WHITE);
+    if (obs_view && env->obs_tiles)
+        draw_tile_ids(env, dst);
+}
+
 void puf_render(Env* env) {
     if (!IsWindowReady()) {
-        SetTraceLogLevel(LOG_WARNING);
-        InitWindow(SCREEN_WIDTH * 4, PK_FRAME_H * 4, "PufferLib Pokemon Red");
-        SetTargetFPS(60);
-        Image img = GenImageColor(PK_FRAME_W, PK_FRAME_H, BLACK);
-        ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-        env->render_texture = LoadTextureFromImage(img);
-        UnloadImage(img);
+        render_init(env, SCREEN_WIDTH * 4, PK_FRAME_H * 4, 0);
     }
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
 
-    if (IsKeyDown(KEY_Z)) {
+    if (IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z)) {
         env->agents[0].actions[0] = PKRED_ACTION_A;
-    } else if (IsKeyDown(KEY_X)) {
+    } else if (IsKeyPressed(KEY_X) || IsKeyPressedRepeat(KEY_X)) {
         env->agents[0].actions[0] = PKRED_ACTION_B;
+    } else if (IsKeyPressed(KEY_ENTER) || IsKeyPressedRepeat(KEY_ENTER)) {
+        env->agents[0].actions[0] = PKRED_ACTION_START;
+    } else if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+        env->agents[0].actions[0] = PKRED_ACTION_SELECT;
     } else if (IsKeyDown(KEY_RIGHT)) {
         env->agents[0].actions[0] = PKRED_ACTION_RIGHT;
     } else if (IsKeyDown(KEY_LEFT)) {
@@ -462,74 +697,36 @@ void puf_render(Env* env) {
 
     if (IsKeyPressed(KEY_S)) {
         const char* save_path = "ocean/pokered/states/quicksave.state";
+        const char* pk_path = "ocean/pokered/states/quicksave.pkstate";
+        bool saved = false;
         if (env->be->quicksave && env->be->quicksave(env->impl, save_path)) {
             printf("pokered: state saved to %s\n", save_path);
-        } else {
-            fprintf(stderr, "pokered: failed to save state to %s\n", save_path);
+            saved = true;
         }
+        PkState pk;
+        if (env->be->export_state(env->impl, &pk) &&
+            pk_state_write(pk_path, &pk)) {
+            printf("pokered: state saved to %s\n", pk_path);
+            saved = true;
+        }
+        if (!saved)
+            fprintf(stderr, "pokered: backend '%s' cannot save its state\n", env->be->name);
     }
 
     if (IsKeyPressed(KEY_O)) {
         env->show_obs_view = !env->show_obs_view;
     }
 
-    if (!env->render_pixels) {
-        env->render_pixels = (uint8_t*)calloc(PK_FRAME_W * PK_FRAME_H * 4, 1);
-    }
-
-    if (env->show_obs_view && env->agents[0].observations) {
-        const obs_t* obs = env->agents[0].observations;
-        for (int y = 0; y < SCALED_HEIGHT; y++) {
-            for (int x = 0; x < SCALED_WIDTH; x++) {
-                uint8_t gray = (uint8_t)obs[y * SCALED_WIDTH + x];
-                uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
-                out[0] = gray;
-                out[1] = gray;
-                out[2] = gray;
-                out[3] = 255;
-            }
-        }
-
-        for (int by = 0; by < BLOCKS_TALL; by++) {
-            for (int bx = 0; bx < BLOCKS_WIDE; bx++) {
-                bool is_player = bx == PLAYER_BLOCK_COL && by == PLAYER_BLOCK_ROW;
-                bool visited = !is_player &&
-                    obs[VISITED_MASK_OFFSET + by * BLOCKS_WIDE + bx] != 0.0f;
-                if (!visited && !is_player)
-                    continue;
-                uint8_t tint_r = is_player ? 220 : 0;
-                uint8_t tint_g = is_player ? 40 : 200;
-                for (int py = 0; py < BLOCK_PIXELS; py++) {
-                    for (int px = 0; px < BLOCK_PIXELS; px++) {
-                        int x = bx * BLOCK_PIXELS + px;
-                        int y = by * BLOCK_PIXELS + py;
-                        uint8_t* out = &env->render_pixels[(y * PK_FRAME_W + x) * 4];
-                        out[0] = (uint8_t)((out[0] + tint_r) / 2);
-                        out[1] = (uint8_t)((out[1] + tint_g) / 2);
-                        out[2] = (uint8_t)(out[2] / 2);
-                    }
-                }
-            }
-        }
-        UpdateTexture(env->render_texture, env->render_pixels);
-    } else if (env->be->frame_rgba && env->be->frame_rgba(env->impl, env->render_pixels)) {
-        UpdateTexture(env->render_texture, env->render_pixels);
-    }
-
     BeginDrawing();
     ClearBackground(BLACK);
-    DrawTexturePro(env->render_texture,
-        (Rectangle){0, 0, (float)PK_FRAME_W, (float)PK_FRAME_H},
-        (Rectangle){0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()},
-        (Vector2){0, 0}, 0.0f, WHITE);
+    render_draw(env, (Rectangle){0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()});
     EndDrawing();
     puf_web_vsync();
 }
 
-void puf_close(Env* env) {
-    if (IsWindowReady()) {
+void puf_close(Env *env) {
+    if (IsWindowReady())
         CloseWindow();
-    }
     if (env->render_pixels) {
         free(env->render_pixels);
         env->render_pixels = NULL;
@@ -543,41 +740,38 @@ void puf_close(Env* env) {
     free(env->visited_cells);
     free(env->map_visited_counts);
     free(env->prev_events);
+    free(env->paid_events);
+    free(env->episode.buf);
+    free(env->screen_buf);
 }
 
-void puf_log(Log* log, Dict* out) {
+void puf_log(Log *log, Dict *out) {
     dict_set(out, "episode_length", log->episode_length);
     dict_set(out, "episode_return", log->episode_return);
+    dict_set(out, "perf", log->perf);
     dict_set(out, "level_sum", log->level_sum);
     dict_set(out, "unique_coords", log->unique_coords);
-
-    dict_set(out, "pkmn1_lvl", log->pkmn1_lvl);
-    dict_set(out, "explore_signal", log->explore_signal);
-    dict_set(out, "pkmn2_lvl", log->pkmn2_lvl);
-    dict_set(out, "catching_signal", log->catching_signal);
-    dict_set(out, "pkmn3_lvl", log->pkmn3_lvl);
-    dict_set(out, "seeing_signal", log->seeing_signal);
-    dict_set(out, "pkmn4_lvl", log->pkmn4_lvl);
-    dict_set(out, "events_signal", log->events_signal);
-    dict_set(out, "pkmn5_lvl", log->pkmn5_lvl);
-    dict_set(out, "leveling_signal", log->leveling_signal);
-    dict_set(out, "pkmn6_lvl", log->pkmn6_lvl);
-    dict_set(out, "healing_signal", log->healing_signal);
-    dict_set(out, "pokedex_owned", log->pokedex_owned);
-    dict_set(out, "hm_learned_signal", log->hm_learned_signal);
-    dict_set(out, "pokedex_seen", log->pokedex_seen);
-    dict_set(out, "pokecenter_signal", log->pokecenter_signal);
     dict_set(out, "party_count", log->party_count);
-    dict_set(out, "pokecenter_visit_signal", log->pokecenter_visit_signal);
-    dict_set(out, "run_signal", log->run_signal);
-    dict_set(out, "milestone_pool_size", log->milestone_pool_size);
-    dict_set(out, "death_signal", log->death_signal);
-
-    dict_set(out, "reset_from_milestone", log->reset_from_milestone);
-    dict_set(out, "money", log->money);
+    dict_set(out, "pokedex_owned", log->pokedex_owned);
+    dict_set(out, "pokedex_seen", log->pokedex_seen);
     dict_set(out, "badges", log->badges);
     dict_set(out, "event_sum", log->event_sum);
+    dict_set(out, "progress", log->progress);
+    dict_set(out, "progress_gained", log->progress_gained);
 
+    dict_set(out, "pkmn1_lvl", log->pkmn_lvl[0]);
+    dict_set(out, "pkmn2_lvl", log->pkmn_lvl[1]);
+    dict_set(out, "pkmn3_lvl", log->pkmn_lvl[2]);
+    dict_set(out, "pkmn4_lvl", log->pkmn_lvl[3]);
+    dict_set(out, "pkmn5_lvl", log->pkmn_lvl[4]);
+    dict_set(out, "pkmn6_lvl", log->pkmn_lvl[5]);
+
+#define PK_SIG_LOG(name, fn, key, penalty, summed) dict_set(out, #name "_signal", log->reward.name);
+    PK_REWARD_SIGNALS(PK_SIG_LOG)
+#undef PK_SIG_LOG
+
+    dict_set(out, "milestone_pool_size", log->milestone_pool_size);
+    dict_set(out, "reset_from_milestone", log->reset_from_milestone);
     dict_set(out, "n", log->n);
 }
 
