@@ -33,11 +33,11 @@ static void observe_mon(const Env *env, const PkMon *m, obs_t *out, bool moves_v
   out[MON_SPECIES] = (obs_t)m->species;
   out[MON_LEVEL] = (obs_t)m->level;
   out[MON_HP] = obs_fraction(mon_hp_fraction(m));
-  out[MON_STATUS] = (obs_t)(env->obs_mon_detail_enabled ? m->status : 0);
+  out[MON_STATUS] = (obs_t)m->status;
   for (int k = 0; k < MON_MOVE_SLOTS; k++) {
     int mx = moves_visible ? move_max_pp(m->moves[k], m->pp[k]) : 0;
-    out[MON_MOVES + k] = (obs_t)(moves_visible && env->obs_moves_enabled ? m->moves[k] : 0);
-    out[MON_MOVE_PP + k] = env->obs_mon_detail_enabled && mx
+    out[MON_MOVES + k] = (obs_t)(moves_visible ? m->moves[k] : 0);
+    out[MON_MOVE_PP + k] = mx
         ? obs_fraction(fminf(1.0f, (float)(m->pp[k] & PKRED_PP_MASK) / (float)mx)) : (obs_t)0;
   }
 }
@@ -45,14 +45,11 @@ static void observe_mon(const Env *env, const PkMon *m, obs_t *out, bool moves_v
 static void observe_info(const Env *env, obs_t *out) {
   const PkSnapshot *s = &env->cur;
   memset(out, 0, INFO_OBS * sizeof(obs_t));
-  if (!env->obs_info_enabled)
-    return;
   out[INFO_MAP] = (obs_t)s->map_n;
   out[INFO_TILESET] = (obs_t)s->tileset;
   out[INFO_BADGES] = (obs_t)s->badges;
   out[INFO_FACING] = (obs_t)(s->facing & 3);
-  if (env->obs_progress_enabled)
-    pk_progress_event_bits(s, out + INFO_PROGRESS);
+  pk_progress_event_bits(s, out + INFO_PROGRESS);
 }
 
 static void observe_battle(const Env *env, obs_t *out) {
@@ -78,10 +75,6 @@ static void observe_bag(const Env *env, obs_t *out) {
   for (int i = 0; i < BAG_SLOTS && i < s->bag_count; i++) {
     out[i * BAG_FIELDS + BAG_ITEM] = (obs_t)s->bag[i].item;
     out[i * BAG_FIELDS + BAG_COUNT] = (obs_t)s->bag[i].count;
-  }
-  if (!env->obs_item_context_enabled)
-    return;
-  for (int i = 0; i < BAG_SLOTS && i < s->bag_count; i++) {
     out[i * BAG_FIELDS + BAG_USABLE] = (obs_t)item_usable(s, s->bag[i].item);
     out[i * BAG_FIELDS + BAG_CURSOR] = (obs_t)(s->bag_cursor == i + 1);
   }

@@ -36,7 +36,7 @@ static uint8_t mem_u8(void *ctx, uint16_t addr) { (void)ctx; return mem_read(add
 static uint16_t mem_u16(void *ctx, uint16_t addr) { (void)ctx; return mem_read16_be(addr); }
 static const uint8_t *mem_span(void *ctx, uint16_t addr, unsigned len) {
     (void)ctx;
-    return wram_span_ptr(addr, len);
+    return wram_range_ptr(addr, len);
 }
 
 static uint8_t nat_peek(void *impl, uint16_t addr) { (void)impl; return mem_read(addr); }

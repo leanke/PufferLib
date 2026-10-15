@@ -125,8 +125,24 @@ run() {
             echo "tensorboard not installed: pip install tensorboard" >&2
             exit 1
             ;;
+        viz)
+            # ./run.sh viz [PORT=3344]: local map-stream relay + viewer for pokered's stream_url.
+            local dir=vendor/pokerl-map-viz/ws-server
+            if [ ! -f "$dir/index.js" ]; then
+                echo "$dir not found (clone leanke/pokerl-map-viz into vendor/pokerl-map-viz)" >&2
+                exit 1
+            fi
+            if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+                echo "viz needs node and npm" >&2
+                exit 1
+            fi
+            if [ ! -d "$dir/node_modules" ]; then
+                (cd "$dir" && npm install --no-audit --no-fund) || exit 1
+            fi
+            PORT="${1:-${PORT:-3344}}" exec node "$dir/index.js"
+            ;;
         *)
-            echo "usage: $0 [train|eval|pokered|build|test|tensorboard] [section.key=value ...]" >&2
+            echo "usage: $0 [train|eval|pokered|build|test|tensorboard|viz] [section.key=value ...]" >&2
             exit 1
             ;;
     esac

@@ -31,16 +31,18 @@ static float signal_exploration(Env *env) {
 }
 
 static float signal_catching(Env *env) {
-  if (env->cur.pokedex_owned_count <= env->prev.pokedex_owned_count)
+  if (env->cur.party_count == 0 || env->cur.pokedex_owned_count <= env->dex_owned_best)
     return 0.0f;
+  env->dex_owned_best = env->cur.pokedex_owned_count;
   if (env->verbose)
     printf("Caught a new Pokemon! Pokedex owned: %d\n", env->cur.pokedex_owned_count);
   return 1.0f;
 }
 
 static float signal_seeing(Env *env) {
-  if (env->cur.pokedex_seen_count <= env->prev.pokedex_seen_count)
+  if (env->cur.pokedex_seen_count <= env->dex_seen_best)
     return 0.0f;
+  env->dex_seen_best = env->cur.pokedex_seen_count;
   if (env->verbose)
     printf("Saw a new Pokemon! Pokedex seen: %d\n", env->cur.pokedex_seen_count);
   return 1.0f;
@@ -60,10 +62,12 @@ static float signal_leveling(Env *env) {
   if (gained <= 0)
     return 0.0f;
 
-  int level_sum = party_level_sum(cur);
-  if (env->verbose)
+
+  if (env->verbose) {
+    int level_sum = party_level_sum(cur);
     printf("Leveled up! Party levels: %d -> %d\n", party_level_sum(prev), level_sum);
-  return level_sum < 15 ? (float)gained : (float)gained / 4.0f;
+  }
+  return (float)gained;
 }
 
 static float signal_battling(Env *env) {
@@ -88,7 +92,7 @@ static float signal_events(Env *env) {
     return 0.0f;
   int fresh = 0;
   for (int b = 0; b < PK_EVENT_FLAG_BYTES; b++) {
-    uint8_t rose = cur[b] & (uint8_t)~env->prev_events[b] & g_pk_events.mask[b] & (uint8_t)~env->event_skip[b];
+    uint8_t rose = cur[b] & (uint8_t)~env->prev_events[b] & g_pk_events.mask[b];
     if (rose) {
       uint8_t pay = env->event_reward_once ? rose & (uint8_t)~env->paid_events[b] : rose;
       fresh += __builtin_popcount(pay);
@@ -178,7 +182,7 @@ static int tms_consumed(Env *env) {
 
 static int item_taught(Env *env) {
   const PkSnapshot *cur = &env->cur, *prev = &env->prev;
-  int taught = 0, tms = 0;
+  int taught = 0;
   if (cur->party_count == prev->party_count) {
     for (int i = 0; i < cur->party_count; i++) {
       if (cur->party[i].species == 0 || cur->party[i].species != prev->party[i].species)
@@ -189,18 +193,15 @@ static int item_taught(Env *env) {
           continue;
         int h = hm_index(move), t;
         if (h >= 0) {
-          if (!env->hm_taught_once || !(env->hm_taught_mask & (1u << h)))
-            taught++;
-          env->hm_taught_mask |= (uint8_t)(1u << h);
-        } else if (env->tm_taught_enabled && (t = tm_index(move)) >= 0) {
+          taught++;
+        } else if ((t = tm_index(move)) >= 0) {
           env->tm_pending |= 1ull << t;
           env->tm_pending_steps = 0;
         }
       }
     }
   }
-  if (env->tm_taught_enabled)
-    tms = tms_consumed(env);
+  int tms = tms_consumed(env);
   if (env->verbose) {
     if (taught > 0)
       printf("Taught an HM to a Pokemon\n");
@@ -215,7 +216,7 @@ static uint8_t hm_uses(const PkSnapshot *cur, const PkSnapshot *prev) {
     return 0;
   bool same_map = cur->map_n == prev->map_n;
   uint8_t used = 0;
-  if (cur->cut_used)
+  if (cur->cut_used && cur->cut_used != PKRED_CUT_TILE_GRASS)
     used |= PK_HM_USE_CUT;
   if (!prev->surfing && cur->surfing)
     used |= PK_HM_USE_SURF;
@@ -228,14 +229,19 @@ static uint8_t hm_uses(const PkSnapshot *cur, const PkSnapshot *prev) {
   return used;
 }
 
-static int item_field_moves(Env *env) {
+static float signal_hm(Env *env) {
   uint8_t used = hm_uses(&env->cur, &env->prev);
-  if (env->hm_used_once)
-    used &= (uint8_t)~env->hm_used_mask;
-  env->hm_used_mask |= used;
+  for (int i = 0; i < 5; i++) {
+    if (!(used & (1u << i)))
+      continue;
+    if (env->hm_use_cap >= 0 && env->hm_use_count[i] >= env->hm_use_cap)
+      used &= (uint8_t)~(1u << i);
+    else
+      env->hm_use_count[i]++;
+  }
   if (used && env->verbose)
     printf("Used an HM outside of battle (mask %d)\n", used);
-  return __builtin_popcount(used);
+  return (float)__builtin_popcount(used);
 }
 
 static uint8_t consumed_kinds(const PkSnapshot *cur, const PkSnapshot *prev) {
@@ -339,12 +345,7 @@ static int item_key_items(Env *env) {
 }
 
 static float signal_item_used(Env *env) {
-  float paid = (float)(item_taught(env) + item_field_moves(env));
-  if (env->item_used_consumables_enabled)
-    paid += item_consumables(env);
-  if (env->item_used_key_items_enabled)
-    paid += (float)item_key_items(env);
-  return paid;
+  return (float)item_taught(env) + item_consumables(env) + (float)item_key_items(env);
 }
 
 static float signal_none(Env *env) {
@@ -356,10 +357,7 @@ static float calculate_rewards(Env *env) {
   float gained = 0.0f, lost = 0.0f;
 #define PK_SIG_EVAL(name, fn, key, penalty, summed)                               \
   if (summed) {                                                                   \
-    float w = env->weight[PK_SIG_##name];                                         \
-    if (PK_SIG_##name == PK_SIG_explore && env->exploration_death_scaling_enabled) \
-      w /= (float)(env->episode.blackouts + 1);                                   \
-    float v = w * fn(env);                                                        \
+    float v = env->weight[PK_SIG_##name] * fn(env);                               \
     env->totals.name += v;                                                        \
     if (penalty)                                                                  \
       lost += v;                                                                  \

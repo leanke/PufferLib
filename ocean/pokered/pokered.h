@@ -34,7 +34,8 @@ typedef float obs_t;
     X(death, signal_none, "weight_death", 1, 0)                    \
     X(fleeing, signal_fleeing, "weight_fleeing", 1, 1)             \
     X(healing, signal_healing, "weight_healing", 0, 1)             \
-    X(item_used, signal_item_used, "weight_item_used", 0, 1)
+    X(item_used, signal_item_used, "weight_item_used", 0, 1)       \
+    X(hm, signal_hm, "weight_hm", 0, 1)
 
 #define PK_SIG_FIELD(name, fn, key, penalty, summed) float name;
 #define PK_SIG_ENUM(name, fn, key, penalty, summed) PK_SIG_##name,
@@ -59,8 +60,7 @@ struct Log {
     float pokedex_owned;
     float pokedex_seen;
     RewardTotals reward;
-    float milestone_pool_size;
-    float reset_from_milestone;
+    float episode_extensions;
     float n;
 };
 
@@ -90,36 +90,26 @@ struct Env {
     uint8_t *visited_cells;
     uint16_t *map_visited_counts;
     uint32_t unique_coords_count;
+    uint8_t dex_owned_best, dex_seen_best;
     uint8_t *prev_events;
     uint8_t *paid_events;
-    uint8_t event_skip[PK_EVENT_FLAG_BYTES];
     bool event_reward_once;
     bool start_select_enabled;
+    bool hm_actions;
 
     PkEpisode episode;
 
     float weight[PK_SIG_COUNT];
-    bool hm_used_once;
+    int hm_use_cap;
     float healing_health_left;
     float healing_pp_left;
-    uint8_t hm_used_mask;
-    bool hm_taught_once;
-    uint8_t hm_taught_mask;
-    bool item_used_consumables_enabled;
-    bool item_used_key_items_enabled;
+    int hm_use_count[5];
     uint8_t key_item_mask;
     PkItemUse item_use;
-    bool tm_taught_enabled;
     uint64_t tm_pending;
     int tm_pending_steps;
     int exploration_cell_size;
-    bool exploration_death_scaling_enabled;
 
-    bool obs_info_enabled;
-    bool obs_progress_enabled;
-    bool obs_moves_enabled;
-    bool obs_mon_detail_enabled;
-    bool obs_item_context_enabled;
     float map_exhaustion_norm;
 
     bool verbose;
@@ -152,34 +142,21 @@ static void env_rebase(Env *env, bool clear_cut) {
     }
 }
 
-static bool env_state_load(Env *env, const void *buf) {
-    if (!env->be->state_load(env->impl, buf))
-        return false;
-    env_rebase(env, true);
-    return true;
-}
 
-static void env_try_milestone_start(Env *env) {
-    const uint8_t *blob = pk_episode_pick_milestone(&env->episode, &env->rng);
-    if (blob && env_state_load(env, blob))
-        env->episode.from_milestone = true;
-}
-
-static void env_capture_milestones(Env *env) {
-    pk_episode_capture(&env->episode, &env->cur, &env->prev, env->be, env->impl, &env->rng, env->verbose);
-}
-
-static void env_advance(Env *env, int action) {
+static void env_advance_buttons(Env *env, unsigned buttons) {
     PkRam ram = env_ram(env);
     pk_ram_apply_scenario(&ram, &env->scenario, &env->cur);
-    env->be->step(env->impl, pk_action_buttons(action));
+    env->be->step(env->impl, buttons);
     pk_ram_track_cut(&ram, &env->tracker, &env->cur);
     pk_events_stepped(&env->tracker);
 }
 
+static void env_advance(Env *env, int action) { env_advance_buttons(env, pk_action_buttons(action)); }
+
 #include "pokered_progress.h"
 #include "pokered_obs.h"
 #include "pokered_rew.h"
+#include "pokered_hm.h"
 
 static void clear_visited(Env *env) {
     env->unique_coords_count = 0;
@@ -212,8 +189,7 @@ static void add_log(Env *env) {
         fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
     log->pokedex_owned += s->pokedex_owned_count;
     log->pokedex_seen += s->pokedex_seen_count;
-    log->milestone_pool_size += env->episode.milestones_enabled ? (float)pk_pool_slots_filled(env->episode.pool) : 0.0f;
-    log->reset_from_milestone += env->episode.from_milestone ? 1.0f : 0.0f;
+    log->episode_extensions += env->episode.extensions;
     log->n++;
 }
 
@@ -248,16 +224,7 @@ static void read_reward_config(Env *env, Dict *kw) {
     env->weight[PK_SIG_##name] = read_signal_weight(kw, key, PK_SIG_##name, penalty);
     PK_REWARD_SIGNALS(PK_SIG_READ)
 #undef PK_SIG_READ
-    env->hm_used_once = kw_bool(kw, "hm_used_once");
-    env->tm_taught_enabled = kw_bool(kw, "tm_taught_enabled");
-    env->hm_taught_once = kw_bool(kw, "hm_taught_once");
-    env->item_used_consumables_enabled = kw_bool(kw, "item_used_consumables_enabled");
-    env->item_used_key_items_enabled = kw_bool(kw, "item_used_key_items_enabled");
-    memset(env->event_skip, 0, sizeof(env->event_skip));
-    if (env->item_used_key_items_enabled) {
-        env->event_skip[PKRED_ADDR_ROUTE12_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE12_SNORLAX_BIT;
-        env->event_skip[PKRED_ADDR_ROUTE16_SNORLAX - PKRED_ADDR_EVENT_FLAGS] |= 1u << PKRED_FIGHT_ROUTE16_SNORLAX_BIT;
-    }
+    env->hm_use_cap = kw_int(kw, "hm_use_cap");
     env->healing_health_left = kw_float(kw, "healing_health_left");
     env->healing_pp_left = kw_float(kw, "healing_pp_left");
     if (env->healing_health_left < 0.0f || env->healing_health_left > 1.0f || env->healing_pp_left < 0.0f ||
@@ -267,18 +234,13 @@ static void read_reward_config(Env *env, Dict *kw) {
     }
     env->event_reward_once = kw_bool(kw, "event_reward_once");
     env->start_select_enabled = kw_bool(kw, "start_select_enabled");
+    env->hm_actions = kw_bool(kw, "hm_actions");
     env->exploration_cell_size = kw_int(kw, "exploration_cell_size");
     if (env->exploration_cell_size <= 0)
         env->exploration_cell_size = 1;
-    env->exploration_death_scaling_enabled = kw_bool(kw, "exploration_death_scaling_enabled");
 }
 
 static void read_observation_config(Env *env, Dict *kw) {
-    env->obs_info_enabled = kw_bool(kw, "obs_info_enabled");
-    env->obs_progress_enabled = kw_bool(kw, "obs_progress_enabled");
-    env->obs_moves_enabled = kw_bool(kw, "obs_moves_enabled");
-    env->obs_mon_detail_enabled = kw_bool(kw, "obs_mon_detail_enabled");
-    env->obs_item_context_enabled = kw_bool(kw, "obs_item_context_enabled");
     env->map_exhaustion_norm = kw_float(kw, "map_exhaustion_norm");
     if (env->map_exhaustion_norm <= 0.0f)
         env->map_exhaustion_norm = 1.0f;
@@ -286,13 +248,12 @@ static void read_observation_config(Env *env, Dict *kw) {
 
 static void read_episode_config(Env *env, Dict *kw) {
     PkEpisode *ep = &env->episode;
-    ep->max_length = (int32_t)dict_get(kw, "max_episode_length");
+    ep->base_length = (int32_t)dict_get(kw, "max_episode_length");
+    ep->max_length = ep->base_length;
     ep->full_reset = kw_bool(kw, "full_reset");
     env->verbose = kw_bool(kw, "verbose");
-    ep->milestones_enabled = kw_bool(kw, "milestones_enabled");
-    ep->milestone_reset_prob = kw_float(kw, "milestone_reset_prob");
-    ep->milestone_states_per_slot = kw_int(kw, "milestone_states_per_slot");
-    ep->milestone_progress_bias = kw_float(kw, "milestone_progress_bias");
+    ep->milestone_key_items = kw_bool(kw, "milestone_key_items");
+    ep->milestone_extend_episode = kw_bool(kw, "milestone_extend_episode");
 }
 
 static bool dict_lookup(void *ctx, const char *key, double *num, const char **str) {
@@ -319,9 +280,6 @@ static void read_backend_config(Env *env, Dict *kw, PkBackendConfig *bc) {
 }
 
 static void read_scenario_config(Env *env, Dict *kw) {
-    env->scenario.disable_wild_until_badge = kw_bool(kw, "disable_wild_until_badge");
-    env->scenario.route22_rival_beaten = kw_bool(kw, "route22_rival_beaten");
-    env->scenario.route22_rival_2nd_beaten = kw_bool(kw, "route22_rival_2nd_beaten");
     int text_speed = kw_int(kw, "text_speed"), animation = kw_int(kw, "battle_animation"),
         style = kw_int(kw, "battle_style");
     if (text_speed < 0 || text_speed > 3 || animation < 0 || animation > 2 || style < 0 || style > 2) {
@@ -363,7 +321,6 @@ void puf_init(Env *env, Dict *kwargs) {
     PkOptions opts = {kwargs, dict_lookup};
     env->be = select_backend(kwargs);
     env->impl = env->be->create(&bc, &opts);
-    pk_episode_init(&env->episode, env->be);
 
     env->visited_coords = (uint8_t *)calloc(VISITED_BYTES, 1);
     env->visited_cells = (uint8_t *)calloc(VISITED_BYTES, 1);
@@ -377,6 +334,11 @@ void puf_init(Env *env, Dict *kwargs) {
     sc.enabled = kw_bool(kwargs, "stream_enabled");
     sc.async = kw_bool(kwargs, "stream_async");
     sc.interval = kw_int(kwargs, "stream_interval");
+    sc.window = kw_int(kwargs, "stream_window");
+    sc.agents = kw_int(kwargs, "stream_agents");
+    sc.trainer_class = kw_bool(kwargs, "stream_trainer_class");
+    sc.sprites = kw_bool(kwargs, "stream_sprites");
+    sc.color_progress = kw_bool(kwargs, "stream_color_progress");
     sc.connections = kw_int(kwargs, "stream_connections");
     sc.queue_mb = kw_int(kwargs, "stream_queue_mb");
     sc.user = kw_str(kwargs, "stream_user", "User");
@@ -391,18 +353,18 @@ static void update_action_mask(Env *env) {
         return;
     mask[PKRED_ACTION_START] = env->start_select_enabled;
     mask[PKRED_ACTION_SELECT] = env->start_select_enabled;
+    for (int h = 0; h < PK_NUM_HMS; h++)
+        mask[PKRED_ACTION_HM_CUT + h] = env->hm_actions && hm_action_ready(&env->cur, h);
 }
 
 static void puf_reset_body(Env *env, bool do_full_reset) {
     bool full = env->episode.full_reset && do_full_reset;
     if (full) {
-        env->episode.from_milestone = false;
         clear_visited(env);
     }
     env->be->reset(env->impl, full);
     env_rebase(env, full);
     if (full) {
-        env_try_milestone_start(env);
         PkRam ram = env_ram(env);
         pk_ram_prepare_start(&ram, &env->scenario, &env->rng);
         env->episode.blackouts = 0;
@@ -411,6 +373,9 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
     env_snapshot(env);
     env->prev = env->cur;
+    env->dex_owned_best = env->cur.pokedex_owned_count;
+    env->dex_seen_best = env->cur.pokedex_seen_count;
+    pk_episode_begin(&env->episode, &env->cur);
     update_observations(env);
 
     env->agents[0].rewards[0] = 0;
@@ -419,8 +384,7 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->score = 0.0f;
     env->progress_start = pk_progress(&env->cur);
     env->prev_action = -1;
-    env->hm_used_mask = 0;
-    env->hm_taught_mask = 0;
+    memset(env->hm_use_count, 0, sizeof(env->hm_use_count));
     env->key_item_mask = 0;
     memset(&env->item_use, 0, sizeof(env->item_use));
     env->tm_pending = 0;
@@ -461,12 +425,20 @@ static void puf_step_body(Env *env) {
     env->agents[0].terminals[0] = 0;
     env->step_count++;
 
-    env->prev_action = (int)env->agents[0].actions[0];
-    if (!env->start_select_enabled && env->prev_action >= PKRED_ACTION_START)
-        env->prev_action = -1;
-    env_advance(env, env->prev_action);
+    int action = (int)env->agents[0].actions[0];
+    if (!env->start_select_enabled && (action == PKRED_ACTION_START || action == PKRED_ACTION_SELECT))
+        action = -1;
+    int hm = action - PKRED_ACTION_HM_CUT;
+    bool hm_valid = hm >= 0 && hm < PK_NUM_HMS;
+    if (hm_valid && !(env->hm_actions && hm_action_ready(&env->cur, hm)))
+        action = -1, hm_valid = false;
+    env->prev_action = action;
+    if (hm_valid)
+        hm_run(env, hm);
+    else
+        env_advance(env, action);
     env_snapshot(env);
-    env_capture_milestones(env);
+    pk_episode_update_length(&env->episode, &env->cur);
 
     float reward = calculate_rewards(env);
     update_observations(env);
@@ -475,8 +447,10 @@ static void puf_step_body(Env *env) {
     env->score += reward;
 
     stream_collect(&env->stream, env->cur.x, env->cur.y, env->cur.map_n);
-    if (env->stream.interval > 0 && env->step_count % env->stream.interval == 0)
+    if (env->stream.interval > 0 && env->step_count % env->stream.interval == 0) {
+        env->stream.badges = __builtin_popcount(env->cur.badges);
         stream_flush(&env->stream);
+    }
 
     if (env->cur.step_events & PK_EV_BLACKOUT)
         handle_blackout(env);
@@ -606,6 +580,16 @@ void puf_render(Env* env) {
         env->agents[0].actions[0] = PKRED_ACTION_START;
     } else if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
         env->agents[0].actions[0] = PKRED_ACTION_SELECT;
+    } else if (IsKeyPressed(KEY_ONE)) {
+        env->agents[0].actions[0] = PKRED_ACTION_HM_CUT;
+    } else if (IsKeyPressed(KEY_TWO)) {
+        env->agents[0].actions[0] = PKRED_ACTION_HM_FLY;
+    } else if (IsKeyPressed(KEY_THREE)) {
+        env->agents[0].actions[0] = PKRED_ACTION_HM_SURF;
+    } else if (IsKeyPressed(KEY_FOUR)) {
+        env->agents[0].actions[0] = PKRED_ACTION_HM_STRENGTH;
+    } else if (IsKeyPressed(KEY_FIVE)) {
+        env->agents[0].actions[0] = PKRED_ACTION_HM_FLASH;
     } else if (IsKeyDown(KEY_RIGHT)) {
         env->agents[0].actions[0] = PKRED_ACTION_RIGHT;
     } else if (IsKeyDown(KEY_LEFT)) {
@@ -664,7 +648,6 @@ void puf_close(Env *env) {
     free(env->map_visited_counts);
     free(env->prev_events);
     free(env->paid_events);
-    free(env->episode.buf);
 }
 
 void puf_log(Log *log, Dict *out) {
@@ -692,8 +675,7 @@ void puf_log(Log *log, Dict *out) {
     PK_REWARD_SIGNALS(PK_SIG_LOG)
 #undef PK_SIG_LOG
 
-    dict_set(out, "milestone_pool_size", log->milestone_pool_size);
-    dict_set(out, "reset_from_milestone", log->reset_from_milestone);
+    dict_set(out, "episode_extensions", log->episode_extensions);
     dict_set(out, "n", log->n);
 }
 

@@ -28,7 +28,8 @@
 #define STREAM_MAX_COORDS 8192
 #define STREAM_TIMEOUT_S 2
 #define STREAM_WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define STREAM_NAME_LEN 48
+#define STREAM_NAME_LEN 64
+#define STREAM_USER_LEN 128
 #define STREAM_BACKOFF_MIN_S 1.0
 #define STREAM_BACKOFF_MAX_S 30.0
 #define STREAM_DRAIN_S 2.0
@@ -44,6 +45,11 @@ typedef struct {
     bool enabled;
     bool async;
     int interval;
+    int window;
+    int agents;
+    bool trainer_class;
+    bool sprites;
+    bool color_progress;
     int connections;
     int queue_mb;
     const char *user;
@@ -65,10 +71,15 @@ typedef struct {
     bool enabled;
     bool async;
     int interval;
+    int window;
     int conn_key;
-    char user[64];
+    char user[STREAM_USER_LEN];
     char color[16];
     char env_name[STREAM_NAME_LEN];
+    int sprite_id;
+    bool color_progress;
+    int base_rgb[3];
+    int badges;
 
     StreamConn conn;
 
@@ -87,49 +98,6 @@ typedef struct {
     int connections_open;
 } StreamStats;
 
-static const char *const STREAM_ADJECTIVES[] = {
-    "amber", "ancient", "arctic", "autumn", "bold", "brave", "breezy", "bright", "brisk", "bubbly",
-    "calm", "candid", "cheery", "chilly", "clever", "cloudy", "cosmic", "cozy", "crimson", "crisp",
-    "curious", "dapper", "daring", "dashing", "dawn", "dazzling", "deft", "dizzy", "dreamy", "dusky",
-    "eager", "early", "earnest", "electric", "elegant", "emerald", "epic", "fancy", "fearless", "feisty",
-    "fiery", "fluffy", "frosty", "gallant", "gentle", "giddy", "gilded", "glad", "gleaming", "glossy",
-    "golden", "grand", "groovy", "hardy", "hasty", "hazy", "hearty", "heroic", "hidden", "hollow",
-    "humble", "icy", "idle", "indigo", "ivory", "jade", "jaunty", "jolly", "jovial", "keen",
-    "kind", "lively", "lofty", "loyal", "lucky", "lunar", "lush", "magic", "mellow", "merry",
-    "mighty", "misty", "modest", "mossy", "nimble", "noble", "nocturnal", "nutty", "oaken", "odd",
-    "olive", "orange", "pastel", "patient", "peppy", "plucky", "polar", "polished", "proud", "quick",
-    "quiet", "quirky", "radiant", "rapid", "rosy", "royal", "rugged", "rustic", "sandy", "scarlet",
-    "serene", "shiny", "silent", "silver", "sleepy", "slick", "smoky", "snowy", "solar", "sparkly",
-    "speedy", "spicy", "spry", "stellar", "stormy", "sturdy", "sunny", "swift", "tidy", "tiny",
-    "tranquil", "twilight", "vivid", "wandering", "warm", "wild", "windy", "wise", "witty", "zesty",
-};
-
-static const char *const STREAM_NOUNS[] = {
-    "acorn", "albatross", "anchor", "antelope", "apple", "arrow", "aspen", "badger", "bamboo", "banjo",
-    "barnacle", "beacon", "beetle", "birch", "bison", "blossom", "boulder", "bramble", "breeze", "brook",
-    "buffalo", "butterfly", "cactus", "camel", "canyon", "cardinal", "caribou", "cedar", "cheetah", "chestnut",
-    "cicada", "clover", "cobalt", "comet", "condor", "coral", "cougar", "coyote", "crane", "cricket",
-    "crow", "cypress", "daisy", "dolphin", "dove", "dragonfly", "dune", "eagle", "echo", "eel",
-    "egret", "elk", "ember", "falcon", "fennel", "fern", "ferret", "finch", "firefly", "fjord",
-    "flamingo", "fox", "gazelle", "gecko", "geyser", "glacier", "gopher", "grove", "gull", "harbor",
-    "hare", "hawk", "hazel", "hedgehog", "heron", "hickory", "hornet", "ibis", "iguana", "island",
-    "jackal", "jaguar", "jasmine", "jay", "juniper", "kelp", "kestrel", "kite", "koala", "lagoon",
-    "lantern", "lark", "lemur", "lichen", "lily", "lion", "lizard", "llama", "lotus", "lynx",
-    "magpie", "mallard", "mango", "maple", "marmot", "meadow", "meerkat", "mesa", "mink", "minnow",
-    "mole", "moose", "moth", "mustang", "newt", "nightjar", "oasis", "ocelot", "octopus", "orca",
-    "oriole", "osprey", "otter", "owl", "panda", "panther", "parrot", "pebble", "pelican", "penguin",
-    "pepper", "petrel", "pheasant", "pine", "plover", "poppy", "prairie", "puffin", "puma", "quail",
-    "quartz", "rabbit", "raccoon", "raven", "reed", "reef", "robin", "rook", "rowan", "sable",
-    "saffron", "salmon", "sapling", "sequoia", "shark", "shrew", "skylark", "sloth", "sparrow", "spruce",
-    "squid", "starling", "stoat", "stork", "summit", "swallow", "swan", "sycamore", "tapir", "teal",
-    "thistle", "thrush", "tiger", "toad", "tortoise", "toucan", "trout", "tulip", "tundra", "turtle",
-    "valley", "vole", "walrus", "warbler", "weasel", "whale", "willow", "wolf", "wombat", "wren",
-    "yak", "yarrow", "zebra", "zephyr",
-};
-
-#define STREAM_N_ADJ ((int)(sizeof(STREAM_ADJECTIVES) / sizeof(STREAM_ADJECTIVES[0])))
-#define STREAM_N_NOUN ((int)(sizeof(STREAM_NOUNS) / sizeof(STREAM_NOUNS[0])))
-
 static uint32_t stream_random_u32(void) {
     uint32_t v = 0;
     if (RAND_bytes((unsigned char *)&v, sizeof(v)) != 1)
@@ -137,32 +105,34 @@ static uint32_t stream_random_u32(void) {
     return v;
 }
 
-static pthread_once_t stream_names_once = PTHREAD_ONCE_INIT;
-static const char *stream_run_adjective = "brave";
-static int stream_noun_base = 0;
 static int stream_env_counter = 0;
 
-static void stream_names_init(void) {
-    stream_run_adjective = STREAM_ADJECTIVES[stream_random_u32() % STREAM_N_ADJ];
-    stream_noun_base = (int)(stream_random_u32() % STREAM_N_NOUN);
-}
-
-static const char *stream_run_name(void) {
-    pthread_once(&stream_names_once, stream_names_init);
-    return stream_run_adjective;
-}
-
-static int stream_env_name(int idx, char *out, size_t cap) {
-    const char *noun = STREAM_NOUNS[(stream_noun_base + idx) % STREAM_N_NOUN];
-    int lap = idx / STREAM_N_NOUN;
-    if (lap == 0)
-        return snprintf(out, cap, "%s:%s", stream_run_name(), noun);
-    return snprintf(out, cap, "%s:%s%d", stream_run_name(), noun, lap + 1);
-}
-
 static int stream_next_env_index(void) {
-    pthread_once(&stream_names_once, stream_names_init);
     return __atomic_fetch_add(&stream_env_counter, 1, __ATOMIC_SEQ_CST);
+}
+
+static const char *const STREAM_TRAINER_CLASSES[] = {
+    "Youngster", "Bug Catcher", "Lass", "Sailor", "Jr. Trainer", "Pokemaniac", "Super Nerd", "Hiker",
+    "Biker", "Burglar", "Engineer", "Fisherman", "Swimmer", "Cue Ball", "Gambler", "Beauty",
+    "Psychic", "Rocker", "Juggler", "Tamer", "Bird Keeper", "Blackbelt", "Scientist", "Rocket Grunt",
+    "Cooltrainer", "Gentleman", "Channeler", "Gym Leader", "Elite Four", "Champion", "Rival", "Professor",
+};
+
+#define STREAM_N_CLASSES ((int)(sizeof(STREAM_TRAINER_CLASSES) / sizeof(STREAM_TRAINER_CLASSES[0])))
+
+// characters_transparent.png rows with all 10 grayscale frames; 2 is colored items, the rest lack left/right frames.
+static const unsigned char STREAM_SPRITES[] = {
+    0, 1, 3, 4, 6, 7, 8, 9, 10, 11, 12, 16, 17, 19, 20, 22,
+    23, 26, 27, 28, 30, 34, 35, 36, 37, 38, 40, 43, 44, 45, 46, 47,
+};
+
+static void stream_progress_color(const int base[3], int badges, char *out, size_t cap) {
+    static const int gold[3] = {0xFF, 0xD7, 0x00};
+    int t = badges < 0 ? 0 : badges > 8 ? 8 : badges;
+    int c[3];
+    for (int i = 0; i < 3; i++)
+        c[i] = base[i] + (gold[i] - base[i]) * t / 8;
+    snprintf(out, cap, "#%02X%02X%02X", c[0], c[1], c[2]);
 }
 
 static double stream_now(void) {
@@ -449,14 +419,16 @@ static void stream_conn_close(StreamConn *c) {
 }
 
 static char *stream_build_payload(const char *user, const char *color, const char *env_name,
-                                  const int *coords, int n) {
+                                  int sprite_id, const int *coords, int n) {
     cJSON *root = cJSON_CreateObject();
     cJSON *meta = cJSON_CreateObject();
-    char user_nl[80];
+    char user_nl[STREAM_USER_LEN + 2];
     snprintf(user_nl, sizeof(user_nl), "%s\n", user);
     cJSON_AddStringToObject(meta, "user", user_nl);
     cJSON_AddStringToObject(meta, "color", color);
     cJSON_AddStringToObject(meta, "extra", "\n");
+    if (sprite_id > 0)
+        cJSON_AddNumberToObject(meta, "sprite_id", sprite_id);
     char env_nl[STREAM_NAME_LEN + 2];
     snprintf(env_nl, sizeof(env_nl), "%s\n", env_name);
     cJSON_AddStringToObject(meta, "env_id", env_nl);
@@ -477,9 +449,10 @@ typedef struct StreamMsg {
     int conn_key;
     int n;
     size_t bytes;
-    char user[64];
+    char user[STREAM_USER_LEN];
     char color[16];
     char env_name[STREAM_NAME_LEN];
+    int sprite_id;
     int coords[1];
 } StreamMsg;
 
@@ -544,7 +517,7 @@ static bool stream_sender_deliver(StreamMsg *m) {
         stream_stat_add(&stream_sender.stats.connects, 1);
         slot->backoff = STREAM_BACKOFF_MIN_S;
     }
-    char *payload = stream_build_payload(m->user, m->color, m->env_name, m->coords, m->n);
+    char *payload = stream_build_payload(m->user, m->color, m->env_name, m->sprite_id, m->coords, m->n);
     bool ok = payload && stream_conn_send_text(&slot->conn, payload, strlen(payload));
     free(payload);
     if (!ok) {
@@ -648,6 +621,7 @@ static bool stream_sender_enqueue(PokeredStream *s) {
     memcpy(m->user, s->user, sizeof(m->user));
     memcpy(m->color, s->color, sizeof(m->color));
     memcpy(m->env_name, s->env_name, sizeof(m->env_name));
+    m->sprite_id = s->sprite_id;
     for (int i = 0; i < s->coord_count; i++) {
         m->coords[3 * i] = s->coords_x[i];
         m->coords[3 * i + 1] = s->coords_y[i];
@@ -699,6 +673,7 @@ static void stream_init(PokeredStream *s, const StreamConfig *cfg) {
     s->enabled = cfg->enabled;
     s->async = cfg->async;
     s->interval = cfg->interval > 0 ? cfg->interval : 400;
+    s->window = cfg->window > 0 ? cfg->window : 0;
     snprintf(s->user, sizeof(s->user), "%s", (cfg->user && cfg->user[0]) ? cfg->user : "User");
     snprintf(s->color, sizeof(s->color), "%s", (cfg->color && cfg->color[0]) ? cfg->color : "#0000FF");
     if (!s->enabled) return;
@@ -709,7 +684,24 @@ static void stream_init(PokeredStream *s, const StreamConfig *cfg) {
     }
 
     int idx = stream_next_env_index();
-    stream_env_name(idx, s->env_name, sizeof(s->env_name));
+    if (cfg->agents > 0 && idx >= cfg->agents) {
+        s->enabled = false;
+        return;
+    }
+    if (cfg->trainer_class) {
+        snprintf(s->user, sizeof(s->user), "%s\n%s", STREAM_TRAINER_CLASSES[idx % STREAM_N_CLASSES],
+                 (cfg->user && cfg->user[0]) ? cfg->user : "User");
+    }
+    snprintf(s->env_name, sizeof(s->env_name), "%x", idx);
+    if (cfg->sprites)
+        s->sprite_id = STREAM_SPRITES[idx % (int)sizeof(STREAM_SPRITES)];
+    unsigned r, g, b;
+    if (cfg->color_progress && sscanf(s->color, "#%2x%2x%2x", &r, &g, &b) == 3) {
+        s->color_progress = true;
+        s->base_rgb[0] = (int)r;
+        s->base_rgb[1] = (int)g;
+        s->base_rgb[2] = (int)b;
+    }
     s->conn_key = cfg->connections > 0 ? idx % cfg->connections : idx;
     if (!s->async || cfg->connections <= 0)
         stream_raise_fd_limit();
@@ -721,6 +713,7 @@ static void stream_collect(PokeredStream *s, int x, int y, int map_n) {
     if (!s->enabled) return;
     if (x == 0 && y == 0 && map_n == 0) return;
     if (s->coord_count >= STREAM_MAX_COORDS) return;
+    if (s->window > 0 && s->coord_count >= s->window) return;
     s->coords_x[s->coord_count] = x;
     s->coords_y[s->coord_count] = y;
     s->coords_map[s->coord_count] = map_n;
@@ -736,7 +729,7 @@ static bool stream_try_send(PokeredStream *s) {
         coords[3 * i + 1] = s->coords_y[i];
         coords[3 * i + 2] = s->coords_map[i];
     }
-    char *payload = stream_build_payload(s->user, s->color, s->env_name, coords, s->coord_count);
+    char *payload = stream_build_payload(s->user, s->color, s->env_name, s->sprite_id, coords, s->coord_count);
     free(coords);
     bool ok = payload && stream_conn_send_text(&s->conn, payload, strlen(payload));
     free(payload);
@@ -745,6 +738,8 @@ static bool stream_try_send(PokeredStream *s) {
 
 static void stream_flush(PokeredStream *s) {
     if (!s->enabled || s->coord_count == 0) return;
+    if (s->color_progress)
+        stream_progress_color(s->base_rgb, s->badges, s->color, sizeof(s->color));
     if (s->async) {
         stream_sender_enqueue(s);
         s->coord_count = 0;

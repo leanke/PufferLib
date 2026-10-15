@@ -60,6 +60,7 @@ typedef struct PKRED_PACKED {
 #define PKRED_ADDR_PARTY_COUNT   0xD163u
 
 #define PKRED_ADDR_IS_IN_BATTLE      0xD057u
+#define PKRED_ADDR_TILE_IN_FRONT     0xCFC6u
 #define PKRED_ADDR_BATTLE_TYPE       0xD05Au
 
 #define PKRED_ADDR_BATTLE_MON_SPECIES   0xD014u
@@ -236,6 +237,7 @@ static const uint8_t PKRED_POKECENTER_MAP_IDS[PKRED_POKECENTER_MAPS] = {
 #define PKRED_ADDR_OVERWORLD_MAP     0xC6E8u
 #define PKRED_OVERWORLD_MAP_SIZE     1300
 #define PKRED_ADDR_CUT_TILE          0xCD4Du
+#define PKRED_CUT_TILE_GRASS         0x52u
 #define PKRED_ADDR_UPDATE_SPRITES    0xCFCBu
 #define PKRED_SPRITES_ANIMATING      0xFFu
 #define PKRED_ADDR_MAP_PAL_OFFSET    0xD35Du
@@ -247,6 +249,33 @@ static const uint8_t PKRED_POKECENTER_MAP_IDS[PKRED_POKECENTER_MAPS] = {
 #define PKRED_SURF_STATE             2u
 #define PKRED_PAL_DARK_CAVE          6u
 #define PKRED_PP_MASK                0x3Fu
+
+#define PKRED_ADDR_TOP_MENU_ITEM_Y   0xCC24u
+#define PKRED_ADDR_TOP_MENU_ITEM_X   0xCC25u
+#define PKRED_ADDR_CURRENT_MENU_ITEM 0xCC26u
+#define PKRED_ADDR_MAX_MENU_ITEM     0xCC28u
+#define PKRED_ADDR_MENU_WATCHED_KEYS 0xCC29u
+#define PKRED_ADDR_FIELD_MOVES       0xCD3Du
+#define PKRED_START_MENU_X           0x0Bu
+#define PKRED_START_MENU_Y           0x02u
+#define PKRED_START_MENU_KEYS        0xCBu
+#define PKRED_START_MENU_MAX_DEX     7u
+#define PKRED_PARTY_MENU_Y           0x01u
+#define PKRED_MENU_KEYS_A_B          0x03u
+#define PKRED_NUM_FIELD_MOVES        4
+#define PKRED_TILE_TEXT_FIRST        0x60u
+#define PKRED_TILE_UP_ARROW          0xEDu
+#define PKRED_FLY_MAP_ARROW_X        18
+#define PKRED_TILE_CUT_TREE          0x3Du
+#define PKRED_TILE_GYM_CUT_TREE      0x50u
+#define PKRED_TILE_WATER             0x14u
+#define PKRED_TILE_SHORE             0x32u
+#define PKRED_TILE_SAFARI_SHORE      0x48u
+#define PKRED_TILESET_OVERWORLD      0u
+#define PKRED_TILESET_GYM            7u
+#define PKRED_TILESET_SHIP_PORT      14u
+#define PKRED_TILESET_PLATEAU        23u
+static const uint8_t PKRED_WATER_TILESETS[] = {0, 3, 5, 7, 13, 14, 17, 22, 23};
 
 static inline uint32_t pkred_hash_bytes(const uint8_t *p, int n) {
     uint32_t h = 2166136261u;
@@ -270,18 +299,6 @@ static const uint8_t PKRED_TM_MOVES[PKRED_NUM_TMS] = {
 };
 
 #define PKRED_ADDR_VIRIDIAN_CITY_CUR_SCRIPT 0xD5F4u
-#define PKRED_ADDR_WD72E                    0xD72Eu
-#define PKRED_WD72E_DISABLE_BATTLES_BIT     4
-#define PKRED_ADDR_ROUTE22_RIVAL_EVENTS         0xD7EBu
-#define PKRED_ROUTE22_RIVAL_TRIGGER_1ST_BIT     0
-#define PKRED_ROUTE22_RIVAL_TRIGGER_2ND_BIT     1
-#define PKRED_ROUTE22_RIVAL_BEAT_1ST_BIT        5
-#define PKRED_ROUTE22_RIVAL_BEAT_2ND_BIT        6
-#define PKRED_ROUTE22_RIVAL_WANTS_BATTLE_BIT    7
-
-#define PKRED_ADDR_MISSABLE_OBJECT_FLAGS        0xD5A6u
-#define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_1      0x22u
-#define PKRED_MISSABLE_HS_ROUTE_22_RIVAL_2      0x23u
 
 #ifndef PKRED_MOVE_PP_H
 #define PKRED_MOVE_PP_H

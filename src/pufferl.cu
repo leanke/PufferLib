@@ -2209,7 +2209,9 @@ static int puf_dashboard_frame = 0;
 
 #define PUF_DASH_W 80
 #define PUF_DASH_BASE_ROWS 12
-#define PUF_DASH_MAX_USER_ROWS 15
+#define PUF_DASH_INNER (PUF_DASH_W - 4)
+#define PUF_DASH_MAX_STATS 512
+#define PUF_DASH_MAX_GROUPS 32
 
 // Colors no-op when not a TTY.
 #define PUF_A  (puf_dashboard_tty ? "\033[96m" : "")
@@ -2295,6 +2297,193 @@ static void dash_duration(char* out, size_t n, double sec) {
 static double dash_num(Dict* log, const char* key, double fallback) {
     DictItem* it = dict_find(log, key);
     return it ? it->value : fallback;
+}
+
+static Dict* dash_config(Ini* ini) {
+    for (int i = 0; i < ini->num_sections; i++) {
+        if (strcmp(ini->sections[i].name, "dashboard") == 0) {
+            return &ini->sections[i];
+        }
+    }
+    return NULL;
+}
+
+static const char* dash_cfg_str(Dict* cfg, const char* key, const char* fallback) {
+    DictItem* it = cfg ? dict_find(cfg, key) : NULL;
+    return it && it->str ? it->str : fallback;
+}
+
+static int dash_glob(const char* p, const char* s) {
+    if (!*p) return !*s;
+    if (*p == '*') return dash_glob(p + 1, s) || (*s && dash_glob(p, s + 1));
+    return *p == *s && dash_glob(p + 1, s + 1);
+}
+
+// Splits a space/comma separated pattern list in place.
+static int dash_patterns(char* buf, char** out, int max) {
+    int n = 0;
+    char* save = NULL;
+    for (char* t = strtok_r(buf, " ,\t", &save); t && n < max;
+            t = strtok_r(NULL, " ,\t", &save)) {
+        out[n++] = t;
+    }
+    return n;
+}
+
+static int dash_matches(const char* list, const char* key) {
+    char buf[1024];
+    char* pats[64];
+    snprintf(buf, sizeof(buf), "%s", list);
+    int n = dash_patterns(buf, pats, 64);
+    for (int i = 0; i < n; i++) {
+        if (dash_glob(pats[i], key)) return 1;
+    }
+    return 0;
+}
+
+// Drops decimals, then abbreviates, until the value fits w columns.
+static void dash_stat_val(char* out, size_t n, double v, int w) {
+    for (int prec = 3; prec >= 0; prec--) {
+        snprintf(out, n, "%.*f", prec, v);
+        if ((int)strlen(out) <= w) return;
+    }
+    char tmp[32];
+    dash_abbrev(tmp, sizeof(tmp), fabs(v));
+    snprintf(out, n, "%s%s", v < 0 ? "-" : "", tmp);
+}
+
+typedef struct {
+    char title[48];
+    int start;
+    int count;
+} DashGroup;
+
+// Env stats panel; layout from [dashboard] (groups, hide, columns, max_rows).
+static void dash_env_stats(Ini* ini, Dict* log, int term_rows) {
+    Dict* cfg = dash_config(ini);
+    int cols = cfg && dict_find(cfg, "columns") ? (int)dict_get(cfg, "columns") : 2;
+    if (cols < 1) cols = 1;
+    if (cols > 3) cols = 3;
+    int max_rows = cfg && dict_find(cfg, "max_rows") ? (int)dict_get(cfg, "max_rows") : 24;
+    int user_rows = max_rows;
+    if (puf_dashboard_tty) {
+        user_rows = term_rows - PUF_DASH_BASE_ROWS - 1;
+        if (user_rows > max_rows) user_rows = max_rows;
+    }
+    if (user_rows <= 0) return;
+
+    const char* hide = dash_cfg_str(cfg, "hide", "");
+    int stats[PUF_DASH_MAX_STATS];
+    int nstats = 0;
+    for (int i = 0; i < log->size && nstats < PUF_DASH_MAX_STATS; i++) {
+        const char* key = log->items[i].key;
+        if (strncmp(key, "env/", 4) != 0 || strcmp(key, "env/n") == 0) continue;
+        if (hide[0] && dash_matches(hide, key + 4)) continue;
+        stats[nstats++] = i;
+    }
+
+    int order[PUF_DASH_MAX_STATS];
+    char used[PUF_DASH_MAX_STATS] = {0};
+    DashGroup groups[PUF_DASH_MAX_GROUPS + 1];
+    int ngroups = 0, nordered = 0, has_groups = 0;
+    for (int k = 0; cfg && k < cfg->size && ngroups < PUF_DASH_MAX_GROUPS; k++) {
+        DictItem* item = &cfg->items[k];
+        if (strncmp(item->key, "group_", 6) != 0 || !item->str) continue;
+        char buf[1024];
+        char* pats[64];
+        snprintf(buf, sizeof(buf), "%s", item->str);
+        int npats = dash_patterns(buf, pats, 64);
+        if (npats == 0) continue;
+        has_groups = 1;
+        DashGroup* g = &groups[ngroups];
+        snprintf(g->title, sizeof(g->title), "%s", item->key + 6);
+        for (char* c = g->title; *c; c++) {
+            if (*c == '_') *c = ' ';
+        }
+        g->start = nordered;
+        // Pattern order sets display order within the group.
+        for (int p = 0; p < npats; p++) {
+            for (int s = 0; s < nstats; s++) {
+                if (!used[s] && dash_glob(pats[p], log->items[stats[s]].key + 4)) {
+                    used[s] = 1;
+                    order[nordered++] = stats[s];
+                }
+            }
+        }
+        g->count = nordered - g->start;
+        if (g->count > 0) ngroups++;
+    }
+    const char* other = has_groups ? dash_cfg_str(cfg, "ungrouped", "Other") : "";
+    if (!has_groups || other[0]) {
+        DashGroup* g = &groups[ngroups];
+        snprintf(g->title, sizeof(g->title), "%s", other);
+        g->start = nordered;
+        for (int s = 0; s < nstats; s++) {
+            if (!used[s]) order[nordered++] = stats[s];
+        }
+        g->count = nordered - g->start;
+        if (g->count > 0) ngroups++;
+    }
+
+    // Lines: first < 0 is a group header, else index into order[].
+    struct { int g; int first; } lines[PUF_DASH_MAX_STATS + PUF_DASH_MAX_GROUPS + 1];
+    int nlines = 0;
+    for (int g = 0; g < ngroups; g++) {
+        if (groups[g].title[0]) lines[nlines++] = {g, -1};
+        for (int i = 0; i < groups[g].count; i += cols) {
+            lines[nlines++] = {g, groups[g].start + i};
+        }
+    }
+    int shown_lines = nlines;
+    if (nlines > user_rows) {
+        shown_lines = user_rows - 1;
+        if (shown_lines > 0 && lines[shown_lines - 1].first < 0) shown_lines--;
+    }
+
+    int gap = 3;
+    int cw = (PUF_DASH_INNER - gap * (cols - 1)) / cols;
+    int vw = cols >= 3 ? 7 : 9;
+    int kw = cw - 1 - vw;
+    int pad = PUF_DASH_INNER - cols * cw - gap * (cols - 1);
+    int shown_stats = 0;
+    for (int l = 0; l < shown_lines; l++) {
+        printf("%s│%s ", PUF_W, PUF_R);
+        if (lines[l].first < 0) {
+            const char* t = groups[lines[l].g].title;
+            int tl = (int)strlen(t);
+            if (tl > PUF_DASH_INNER - 8) tl = PUF_DASH_INNER - 8;
+            printf("%s──%s %s%.*s%s %s", PUF_G, PUF_R, PUF_A, tl, t, PUF_R, PUF_G);
+            for (int i = 0; i < PUF_DASH_INNER - 4 - tl; i++) printf("─");
+            printf("%s", PUF_R);
+        } else {
+            DashGroup* g = &groups[lines[l].g];
+            for (int c = 0; c < cols; c++) {
+                int idx = lines[l].first + c;
+                if (c > 0) printf("%*s", gap, "");
+                if (idx >= g->start + g->count) {
+                    printf("%*s", cw, "");
+                    continue;
+                }
+                char vs[32];
+                dash_stat_val(vs, sizeof(vs), log->items[order[idx]].value, vw);
+                printf("%s%-*.*s%s %s%*s%s", PUF_A, kw, kw, log->items[order[idx]].key + 4,
+                    PUF_R, PUF_W, vw, vs, PUF_R);
+                shown_stats++;
+            }
+            printf("%*s", pad, "");
+        }
+        printf(" %s│%s", PUF_W, PUF_R);
+        dash_eol();
+    }
+    if (shown_lines < nlines) {
+        char more[64];
+        int ml = snprintf(more, sizeof(more), "… %d more (dashboard.max_rows / taller terminal)",
+            nordered - shown_stats);
+        ml -= 2;  // "…" is 3 bytes, 1 column
+        printf("%s│%s %s%s%s%*s %s│%s", PUF_W, PUF_R, PUF_G, more, PUF_R,
+            PUF_DASH_INNER - ml > 0 ? PUF_DASH_INNER - ml : 0, "", PUF_W, PUF_R);
+        dash_eol();
+    }
 }
 
 void puf_dashboard_print(Ini* ini, PuffeRL* p, Dict* log, int epoch) {
@@ -2423,44 +2612,7 @@ void puf_dashboard_print(Ini* ini, PuffeRL* p, Dict* log, int epoch) {
     }
     dash_blank();
 
-    int user_rows = PUF_DASH_MAX_USER_ROWS;
-    if (puf_dashboard_tty) {
-        user_rows = term_rows - PUF_DASH_BASE_ROWS - 1;
-        if (user_rows < 0) user_rows = 0;
-        if (user_rows > PUF_DASH_MAX_USER_ROWS) user_rows = PUF_DASH_MAX_USER_ROWS;
-    }
-
-    char pending_key[128];
-    double pending_val = 0;
-    int pending = 0, n = 0, max_items = 2 * user_rows;
-    for (int i = 0; i < log->size && n < max_items; i++) {
-        const char* key = log->items[i].key;
-        if (strncmp(key, "env/", 4) != 0 || strcmp(key, "env/n") == 0) continue;
-        const char* sk = key + 4;
-        if (!pending) {
-            snprintf(pending_key, sizeof(pending_key), "%s", sk);
-            pending_val = log->items[i].value;
-            pending = 1;
-        } else {
-            char ls[32], rs[32];
-            snprintf(ls, sizeof(ls), "%.3f", pending_val);
-            snprintf(rs, sizeof(rs), "%.3f", log->items[i].value);
-            printf("%s│%s %s%-25.25s%s %s%9.9s%s   %s%-25.25s%s %s%9.9s%s    %s│%s",
-                PUF_W, PUF_R, PUF_A, pending_key, PUF_R, PUF_W, ls, PUF_R,
-                PUF_A, sk, PUF_R, PUF_W, rs, PUF_R, PUF_W, PUF_R);
-            dash_eol();
-            pending = 0;
-        }
-        n++;
-    }
-    if (pending) {
-        char ls[32];
-        snprintf(ls, sizeof(ls), "%.3f", pending_val);
-        printf("%s│%s %s%-25.25s%s %s%9.9s%s   %-25.25s %9.9s    %s│%s",
-            PUF_W, PUF_R, PUF_A, pending_key,
-            PUF_R, PUF_W, ls, PUF_R, "", "", PUF_W, PUF_R);
-        dash_eol();
-    }
+    dash_env_stats(ini, log, term_rows);
     dash_rule("╰", "╯");
     dash_end();
 }
