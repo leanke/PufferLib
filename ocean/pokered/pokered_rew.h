@@ -10,6 +10,18 @@ static int party_level_sum(const PkSnapshot *s) {
   return sum;
 }
 
+
+static float signal_exploration_t(Env *env) {
+  const PkSnapshot *cur = &env->cur, *prev = &env->prev;
+
+  if (!is_directional_action(env->prev_action) || is_battle_active(cur))
+    return 0.0f;
+  if (cur->x == prev->x && cur->y == prev->y && cur->map_n == prev->map_n)
+    return 0.0f;
+
+  return 1.0f;
+}
+
 static float signal_exploration(Env *env) {
   const PkSnapshot *cur = &env->cur, *prev = &env->prev;
 
@@ -22,8 +34,6 @@ static float signal_exploration(Env *env) {
   if (!vbit_test_set(env->visited_coords, tile))
     return 0.0f;
   env->unique_coords_count++;
-  if (env->map_visited_counts[cur->map_n] < UINT16_MAX)
-    env->map_visited_counts[cur->map_n]++;
 
   int cell = env->exploration_cell_size;
   uint32_t cell_idx = coord_index(cur->map_n, cur->x / cell, cur->y / cell);
@@ -81,9 +91,15 @@ static float signal_battling(Env *env) {
 static float signal_fleeing(Env *env) {
   if (!(env->cur.step_events & PK_EV_BATTLE_FLED))
     return 0.0f;
+  if (env->flee_exempt_ghost && (env->cur.step_events & PK_EV_GHOST_BATTLE))
+    return 0.0f;
   if (env->verbose)
     printf("Ran from a battle\n");
   return 1.0f;
+}
+
+static float signal_ghost_stall(Env *env) {
+  return is_battle_active(&env->cur) && (env->cur.step_events & PK_EV_GHOST_BATTLE) ? 1.0f : 0.0f;
 }
 
 static float signal_events(Env *env) {
@@ -105,6 +121,41 @@ static float signal_events(Env *env) {
     env->prev_events[b] = cur[b];
   }
   return (float)fresh;
+}
+
+static const uint8_t PK_KEY_REWARD_ITEMS[] = {PKRED_ITEM_SILPH_SCOPE, PKRED_ITEM_LIFT_KEY, PKRED_ITEM_CARD_KEY,
+                                              PKRED_ITEM_SECRET_KEY, PKRED_ITEM_GOLD_TEETH};
+#define PK_KEY_REWARD_ITEM_COUNT ((int)sizeof(PK_KEY_REWARD_ITEMS))
+#define PK_KEY_PROGRESS_DRINK (1u << PK_KEY_REWARD_ITEM_COUNT)
+#define PK_KEY_PROGRESS_GAVE_DRINK (1u << (PK_KEY_REWARD_ITEM_COUNT + 1))
+
+static uint8_t key_progress_mask(const PkSnapshot *s) {
+  uint8_t m = 0;
+  for (int i = 0; i < PK_KEY_REWARD_ITEM_COUNT; i++)
+    if (pk_bag_has(s, PK_KEY_REWARD_ITEMS[i]))
+      m |= (uint8_t)(1u << i);
+  if (pk_bag_has(s, PKRED_ITEM_FRESH_WATER) || pk_bag_has(s, PKRED_ITEM_SODA_POP) || pk_bag_has(s, PKRED_ITEM_LEMONADE))
+    m |= PK_KEY_PROGRESS_DRINK;
+  if (s->gave_guards_drink)
+    m |= PK_KEY_PROGRESS_GAVE_DRINK;
+  return m;
+}
+
+static float signal_key_items(Env *env) {
+  uint8_t got = key_progress_mask(&env->cur) & (uint8_t)~env->key_progress;
+  if (!got)
+    return 0.0f;
+  env->key_progress |= got;
+  if (env->verbose)
+    printf("Key progress (mask %d)\n", got);
+  return (float)__builtin_popcount(got);
+}
+
+static float signal_badges(Env *env) {
+  uint8_t got = env->cur.badges & (uint8_t)~env->prev.badges;
+  if (got && env->verbose)
+    printf("Got a badge (mask %d)\n", got);
+  return (float)__builtin_popcount(got);
 }
 
 static int completed_event_count(const PkSnapshot *s) { return pk_completed_events(s->event_flags); }

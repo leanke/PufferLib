@@ -16,6 +16,7 @@ extern "C" {
 #define PK_TILE_MAP_H 18
 #define PK_TILE_MAP_CELLS (PK_TILE_MAP_W * PK_TILE_MAP_H)
 #define PK_SPRITES 16
+#define PK_DEX_BYTES 19
 
 typedef struct {
     uint8_t species, level, status;
@@ -34,6 +35,9 @@ typedef struct {
     uint8_t box_count;
     PkMon party[6];
     uint8_t pokedex_owned_count, pokedex_seen_count;
+    uint8_t dex_owned[PK_DEX_BYTES];
+    uint32_t money;
+    uint16_t coins;
     float hp_fraction;
 
     uint8_t battle_result;
@@ -47,6 +51,7 @@ typedef struct {
     uint8_t bag_cursor;
 
     uint8_t surfing, biking, strength_active, used_fly, dark_cave, cut_used;
+    uint8_t gave_guards_drink;
     uint32_t map_block_hash;
 
     uint8_t event_flags[PK_EVENT_FLAG_BYTES];
@@ -61,6 +66,7 @@ typedef enum {
     PK_EV_BLACKOUT = 1u << 0,
     PK_EV_BATTLE_WON = 1u << 1,
     PK_EV_BATTLE_FLED = 1u << 2,
+    PK_EV_GHOST_BATTLE = 1u << 3,
 } PkStepEvent;
 
 enum {
@@ -189,15 +195,36 @@ int pk_event_bit(int idx);
 #define INFO_TILESET 1
 #define INFO_BADGES 2
 #define INFO_FACING 3
-#define INFO_PROGRESS 4
+#define INFO_X 4
+#define INFO_Y 5
+#define INFO_TOWNS_LO 6
+#define INFO_TOWNS_HI 7
+#define INFO_MOVEMENT 8
+#define INFO_STRENGTH 9
+#define INFO_MONEY 10
+#define INFO_MONEY_DIGITS 3
+#define INFO_DEX_OWNED (INFO_MONEY + INFO_MONEY_DIGITS)
+#define INFO_DEX_SEEN (INFO_DEX_OWNED + 1)
+#define INFO_EVENTS (INFO_DEX_SEEN + 1)
+#define INFO_MAP_EVENTS_LEFT (INFO_EVENTS + 1)
+#define INFO_MAP_EVENTS_TOTAL (INFO_MAP_EVENTS_LEFT + 1)
+#define INFO_PROGRESS (INFO_MAP_EVENTS_TOTAL + 1)
 #define INFO_PROGRESS_BITS 14
-#define INFO_OBS (INFO_PROGRESS + INFO_PROGRESS_BITS)
+#define INFO_KEY_ITEMS (INFO_PROGRESS + INFO_PROGRESS_BITS)
+#define INFO_KEY_ITEM_BITS 14
+#define INFO_OBS (INFO_KEY_ITEMS + INFO_KEY_ITEM_BITS)
 #define FACING_COUNT 4
+#define TOWN_BITS 11
+#define MOVEMENT_WALK 0
+#define MOVEMENT_BIKE 1
+#define MOVEMENT_SURF 2
+#define MOVEMENT_COUNT 3
 
 #define BATTLE_TYPE_NONE 0
 #define BATTLE_TYPE_WILD 1
 #define BATTLE_TYPE_TRAINER 2
-#define BATTLE_TYPE_COUNT 3
+#define BATTLE_TYPE_GHOST 3
+#define BATTLE_TYPE_COUNT 4
 #define BATTLE_OBS (1 + 2 * MON_FIELDS)
 #define BATTLE_PLAYER_MON_OFFSET 1
 #define BATTLE_ENEMY_MON_OFFSET (1 + MON_FIELDS)

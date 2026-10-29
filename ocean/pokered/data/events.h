@@ -7,9 +7,11 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "ram_map.h"
 #include "../backend/backend.h"
+#include "map_events.h"
 
 typedef struct {
     uint16_t address;
@@ -531,6 +533,8 @@ static struct {
     pthread_once_t once;
     uint8_t mask[PK_EVENT_FLAG_BYTES];
     int16_t event_at[PK_EVENT_FLAG_BYTES * 8];
+    uint16_t map_start[257];
+    int16_t map_bits[EVENT_COUNT];
 } g_pk_events = {PTHREAD_ONCE_INIT};
 
 static void pk_events_table_build(void) {
@@ -546,9 +550,32 @@ static void pk_events_table_build(void) {
         g_pk_events.mask[b >> 3] |= (uint8_t)(1u << (b & 7));
         g_pk_events.event_at[b] = (int16_t)i;
     }
+    for (size_t i = 0; i < EVENT_COUNT; i++)
+        g_pk_events.map_start[PKRED_EVENT_FLAG_MAP[pk_event_flag_index(i)] + 1]++;
+    for (int m = 0; m < 256; m++)
+        g_pk_events.map_start[m + 1] += g_pk_events.map_start[m];
+    uint16_t fill[256];
+    memcpy(fill, g_pk_events.map_start, sizeof(fill));
+    for (size_t i = 0; i < EVENT_COUNT; i++) {
+        int b = pk_event_flag_index(i);
+        g_pk_events.map_bits[fill[PKRED_EVENT_FLAG_MAP[b]]++] = (int16_t)b;
+    }
 }
 
 static inline void pk_events_table_init(void) { pthread_once(&g_pk_events.once, pk_events_table_build); }
+
+// paid may be NULL; map 0xFF holds events with no single map and is never reported
+static inline int pk_map_events_left(const uint8_t *flags, const uint8_t *paid, uint8_t map, int *total) {
+    pk_events_table_init();
+    int left = 0, first = g_pk_events.map_start[map], end = g_pk_events.map_start[map + 1];
+    *total = map == 0xFF ? 0 : end - first;
+    for (int k = first; k < end && map != 0xFF; k++) {
+        int b = g_pk_events.map_bits[k];
+        uint8_t done = flags[b >> 3] | (paid ? paid[b >> 3] : 0);
+        left += !((done >> (b & 7)) & 1);
+    }
+    return left;
+}
 
 static inline int pk_completed_events(const uint8_t *flags) {
     pk_events_table_init();

@@ -42,6 +42,20 @@ static void observe_mon(const Env *env, const PkMon *m, obs_t *out, bool moves_v
   }
 }
 
+static const uint8_t PK_OBS_KEY_ITEMS[] = {
+    PKRED_ITEM_SILPH_SCOPE, PKRED_ITEM_LIFT_KEY,    PKRED_ITEM_CARD_KEY,     PKRED_ITEM_SECRET_KEY,
+    PKRED_ITEM_POKE_FLUTE,  PKRED_ITEM_GOLD_TEETH,  PKRED_ITEM_S_S_TICKET,   PKRED_ITEM_BICYCLE,
+    PKRED_ITEM_HM01_CUT,    PKRED_ITEM_HM02_FLY,    PKRED_ITEM_HM03_SURF,    PKRED_ITEM_HM04_STRENGTH,
+    PKRED_ITEM_HM05_FLASH,
+};
+typedef char pk_obs_key_items_fit[sizeof(PK_OBS_KEY_ITEMS) + 1 == INFO_KEY_ITEM_BITS ? 1 : -1];
+
+static void observe_key_items(const PkSnapshot *s, obs_t *out) {
+  for (size_t i = 0; i < sizeof(PK_OBS_KEY_ITEMS); i++)
+    out[i] = (obs_t)pk_bag_has(s, PK_OBS_KEY_ITEMS[i]);
+  out[sizeof(PK_OBS_KEY_ITEMS)] = (obs_t)s->gave_guards_drink;
+}
+
 static void observe_info(const Env *env, obs_t *out) {
   const PkSnapshot *s = &env->cur;
   memset(out, 0, INFO_OBS * sizeof(obs_t));
@@ -49,7 +63,24 @@ static void observe_info(const Env *env, obs_t *out) {
   out[INFO_TILESET] = (obs_t)s->tileset;
   out[INFO_BADGES] = (obs_t)s->badges;
   out[INFO_FACING] = (obs_t)(s->facing & 3);
-  pk_progress_event_bits(s, out + INFO_PROGRESS);
+  out[INFO_X] = (obs_t)s->x;
+  out[INFO_Y] = (obs_t)s->y;
+  out[INFO_TOWNS_LO] = (obs_t)(s->towns_visited & 0xFF);
+  out[INFO_TOWNS_HI] = (obs_t)((s->towns_visited >> 8) & ((1u << (TOWN_BITS - 8)) - 1));
+  out[INFO_MOVEMENT] = (obs_t)(s->surfing ? MOVEMENT_SURF : s->biking ? MOVEMENT_BIKE : MOVEMENT_WALK);
+  out[INFO_STRENGTH] = (obs_t)s->strength_active;
+  out[INFO_MONEY] = (obs_t)(s->money / 10000 % 100);
+  out[INFO_MONEY + 1] = (obs_t)(s->money / 100 % 100);
+  out[INFO_MONEY + 2] = (obs_t)(s->money % 100);
+  out[INFO_DEX_OWNED] = (obs_t)s->pokedex_owned_count;
+  out[INFO_DEX_SEEN] = (obs_t)s->pokedex_seen_count;
+  out[INFO_EVENTS] = obs_fraction((float)pk_completed_events(s->event_flags) / (float)EVENT_COUNT);
+  int map_total;
+  out[INFO_MAP_EVENTS_LEFT] = (obs_t)pk_map_events_left(s->event_flags, env->event_reward_once ? env->paid_events : NULL,
+                                                        s->map_n, &map_total);
+  out[INFO_MAP_EVENTS_TOTAL] = (obs_t)map_total;
+  pk_progress_event_bits(s, env->obs_progress_gating, out + INFO_PROGRESS);
+  observe_key_items(s, out + INFO_KEY_ITEMS);
 }
 
 static void observe_battle(const Env *env, obs_t *out) {
@@ -57,9 +88,12 @@ static void observe_battle(const Env *env, obs_t *out) {
   memset(out, 0, BATTLE_OBS * sizeof(obs_t));
   if (!is_battle_active(s))
     return;
-  out[0] = (obs_t)(s->in_battle == 2 ? BATTLE_TYPE_TRAINER : BATTLE_TYPE_WILD);
+  bool ghost = pk_ghost_battle(s);
+  out[0] = (obs_t)(s->in_battle == 2 ? BATTLE_TYPE_TRAINER : ghost ? BATTLE_TYPE_GHOST : BATTLE_TYPE_WILD);
   observe_mon(env, &s->battle_mon, out + BATTLE_PLAYER_MON_OFFSET, true);
   observe_mon(env, &s->enemy_mon, out + BATTLE_ENEMY_MON_OFFSET, false);
+  if (ghost)
+    out[BATTLE_ENEMY_MON_OFFSET + MON_SPECIES] = 0;
 }
 
 static void observe_party(const Env *env, obs_t *out) {

@@ -18,6 +18,7 @@ typedef float obs_t;
 #include "backend/backend.h"
 #include "backend/pksnapshot.h"
 #include "pokered_items.h"
+#include "data/species_names.h"
 
 #define ACT_SIZES {PKRED_ACTION_COUNT}
 #define NUM_ATNS 1
@@ -25,7 +26,7 @@ typedef float obs_t;
 #define OBS_SIZE TOTAL_OBSERVATIONS
 
 #define PK_REWARD_SIGNALS(X)                                       \
-    X(explore, signal_exploration, "weight_exploration", 0, 1)    \
+    X(explore, signal_exploration, "weight_exploration", 0, 1)  \
     X(catching, signal_catching, "weight_catching", 0, 1)          \
     X(seeing, signal_seeing, "weight_seeing", 0, 1)                \
     X(leveling, signal_leveling, "weight_leveling", 0, 1)          \
@@ -33,9 +34,12 @@ typedef float obs_t;
     X(battling, signal_battling, "weight_battling", 0, 1)          \
     X(death, signal_none, "weight_death", 1, 0)                    \
     X(fleeing, signal_fleeing, "weight_fleeing", 1, 1)             \
+    X(ghost_stall, signal_ghost_stall, "weight_ghost_stall", 1, 1) \
     X(healing, signal_healing, "weight_healing", 0, 1)             \
     X(item_used, signal_item_used, "weight_item_used", 0, 1)       \
-    X(hm, signal_hm, "weight_hm", 0, 1)
+    X(hm, signal_hm, "weight_hm", 0, 1)                            \
+    X(key_items, signal_key_items, "weight_key_items", 0, 1)       \
+    X(badges, signal_badges, "weight_badges", 0, 1)
 
 #define PK_SIG_FIELD(name, fn, key, penalty, summed) float name;
 #define PK_SIG_ENUM(name, fn, key, penalty, summed) PK_SIG_##name,
@@ -56,10 +60,16 @@ struct Log {
     float progress;
     float progress_gained;
     float unique_coords;
-    float map_exhaustion;
     float pokedex_owned;
     float pokedex_seen;
+    float money;
+    float money_gained;
+    float coins;
+    float coins_gained;
     RewardTotals reward;
+    float battle_steps;
+    float ghost_battle_steps;
+    float steps_since_reward;
     float episode_extensions;
     float n;
 };
@@ -80,20 +90,28 @@ struct Env {
     PkScenario scenario;
 
     int32_t step_count;
+    int32_t battle_steps, ghost_battle_steps, last_reward_step;
     float score;
     int progress_start;
+    uint32_t money_start;
+    uint16_t coins_start;
+    uint8_t maps_entered[32];
     int prev_action;
+    int requested_action;
     RewardTotals totals;
     PokeredStream stream;
 
     uint8_t *visited_coords;
     uint8_t *visited_cells;
-    uint16_t *map_visited_counts;
     uint32_t unique_coords_count;
     uint8_t dex_owned_best, dex_seen_best;
     uint8_t *prev_events;
     uint8_t *paid_events;
     bool event_reward_once;
+    bool flee_exempt_ghost;
+    bool blackout_clear_visited;
+    bool obs_progress_gating;
+    uint8_t key_progress;
     bool start_select_enabled;
     bool hm_actions;
 
@@ -110,13 +128,14 @@ struct Env {
     int tm_pending_steps;
     int exploration_cell_size;
 
-    float map_exhaustion_norm;
 
     bool verbose;
 
     Texture2D render_texture;
     uint8_t *render_pixels;
     bool show_obs_view;
+    bool render_panel;
+    RewardTotals step_totals;
 };
 typedef Env Pokered;
 
@@ -132,6 +151,7 @@ static PkRam env_ram(Env *env) {
 static void env_snapshot(Env *env) {
     env->be->snapshot(env->impl, &env->cur);
     pk_events_apply(&env->tracker, &env->cur);
+    env->maps_entered[env->cur.map_n >> 3] |= (uint8_t)(1u << (env->cur.map_n & 7));
 }
 
 static void env_rebase(Env *env, bool clear_cut) {
@@ -162,7 +182,6 @@ static void clear_visited(Env *env) {
     env->unique_coords_count = 0;
     memset(env->visited_coords, 0, VISITED_BYTES);
     memset(env->visited_cells, 0, VISITED_BYTES);
-    memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
 }
 
 static void add_log(Env *env) {
@@ -181,14 +200,19 @@ static void add_log(Env *env) {
     log->party_count += s->party_count;
     log->badges += __builtin_popcount(s->badges);
     log->event_sum += completed_event_count(s);
-    int progress = pk_progress(s);
+    int progress = pk_progress(s, env->maps_entered);
     log->progress += progress;
     log->progress_gained += progress - env->progress_start;
     log->unique_coords += env->unique_coords_count;
-    log->map_exhaustion +=
-        fminf(1.0f, (float)env->map_visited_counts[s->map_n] / env->map_exhaustion_norm);
     log->pokedex_owned += s->pokedex_owned_count;
     log->pokedex_seen += s->pokedex_seen_count;
+    log->money += s->money;
+    log->money_gained += (float)s->money - (float)env->money_start;
+    log->coins += s->coins;
+    log->coins_gained += (float)s->coins - (float)env->coins_start;
+    log->battle_steps += env->battle_steps;
+    log->ghost_battle_steps += env->ghost_battle_steps;
+    log->steps_since_reward += env->step_count - env->last_reward_step;
     log->episode_extensions += env->episode.extensions;
     log->n++;
 }
@@ -233,17 +257,14 @@ static void read_reward_config(Env *env, Dict *kw) {
         exit(1);
     }
     env->event_reward_once = kw_bool(kw, "event_reward_once");
+    env->flee_exempt_ghost = kw_bool(kw, "flee_exempt_ghost");
+    env->blackout_clear_visited = kw_bool(kw, "blackout_clear_visited");
+    env->obs_progress_gating = kw_bool(kw, "obs_progress_gating");
     env->start_select_enabled = kw_bool(kw, "start_select_enabled");
     env->hm_actions = kw_bool(kw, "hm_actions");
     env->exploration_cell_size = kw_int(kw, "exploration_cell_size");
     if (env->exploration_cell_size <= 0)
         env->exploration_cell_size = 1;
-}
-
-static void read_observation_config(Env *env, Dict *kw) {
-    env->map_exhaustion_norm = kw_float(kw, "map_exhaustion_norm");
-    if (env->map_exhaustion_norm <= 0.0f)
-        env->map_exhaustion_norm = 1.0f;
 }
 
 static void read_episode_config(Env *env, Dict *kw) {
@@ -252,6 +273,8 @@ static void read_episode_config(Env *env, Dict *kw) {
     ep->max_length = ep->base_length;
     ep->full_reset = kw_bool(kw, "full_reset");
     env->verbose = kw_bool(kw, "verbose");
+    DictItem *panel = dict_find(kw, "render_panel");
+    env->render_panel = panel && panel->value != 0.0;
     ep->milestone_key_items = kw_bool(kw, "milestone_key_items");
     ep->milestone_extend_episode = kw_bool(kw, "milestone_extend_episode");
 }
@@ -313,7 +336,6 @@ void puf_init(Env *env, Dict *kwargs) {
 
     read_episode_config(env, kwargs);
     read_reward_config(env, kwargs);
-    read_observation_config(env, kwargs);
     read_scenario_config(env, kwargs);
 
     PkBackendConfig bc;
@@ -324,11 +346,11 @@ void puf_init(Env *env, Dict *kwargs) {
 
     env->visited_coords = (uint8_t *)calloc(VISITED_BYTES, 1);
     env->visited_cells = (uint8_t *)calloc(VISITED_BYTES, 1);
-    env->map_visited_counts = (uint16_t *)calloc(MAX_MAPS, sizeof(uint16_t));
     env->prev_events = (uint8_t *)calloc(PK_EVENT_FLAG_BYTES, 1);
     env->paid_events = (uint8_t *)calloc(PK_EVENT_FLAG_BYTES, 1);
     pk_events_table_init();
     env->prev_action = -1;
+    env->requested_action = -1;
 
     StreamConfig sc;
     sc.enabled = kw_bool(kwargs, "stream_enabled");
@@ -347,20 +369,28 @@ void puf_init(Env *env, Dict *kwargs) {
     stream_init(&env->stream, &sc);
 }
 
+static bool action_available(Env *env, int action) {
+    if (action == PKRED_ACTION_START || action == PKRED_ACTION_SELECT)
+        return env->start_select_enabled;
+    int hm = action - PKRED_ACTION_HM_CUT;
+    if (hm >= 0 && hm < PK_NUM_HMS)
+        return env->hm_actions && hm_action_ready(&env->cur, hm);
+    return true;
+}
+
 static void update_action_mask(Env *env) {
     unsigned char *mask = env->agents[0].action_mask;
     if (!mask)
         return;
-    mask[PKRED_ACTION_START] = env->start_select_enabled;
-    mask[PKRED_ACTION_SELECT] = env->start_select_enabled;
-    for (int h = 0; h < PK_NUM_HMS; h++)
-        mask[PKRED_ACTION_HM_CUT + h] = env->hm_actions && hm_action_ready(&env->cur, h);
+    for (int a = PKRED_ACTION_START; a < PKRED_ACTION_COUNT; a++)
+        mask[a] = action_available(env, a);
 }
 
 static void puf_reset_body(Env *env, bool do_full_reset) {
     bool full = env->episode.full_reset && do_full_reset;
     if (full) {
         clear_visited(env);
+        memset(env->maps_entered, 0, sizeof(env->maps_entered));
     }
     env->be->reset(env->impl, full);
     env_rebase(env, full);
@@ -370,7 +400,6 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
         env->episode.blackouts = 0;
     }
 
-    memset(env->map_visited_counts, 0, MAX_MAPS * sizeof(*env->map_visited_counts));
     env_snapshot(env);
     env->prev = env->cur;
     env->dex_owned_best = env->cur.pokedex_owned_count;
@@ -381,11 +410,16 @@ static void puf_reset_body(Env *env, bool do_full_reset) {
     env->agents[0].rewards[0] = 0;
     env->agents[0].terminals[0] = 0;
     env->step_count = 0;
+    env->battle_steps = env->ghost_battle_steps = env->last_reward_step = 0;
     env->score = 0.0f;
-    env->progress_start = pk_progress(&env->cur);
+    env->progress_start = pk_progress(&env->cur, env->maps_entered);
+    env->money_start = env->cur.money;
+    env->coins_start = env->cur.coins;
     env->prev_action = -1;
+    env->requested_action = -1;
     memset(env->hm_use_count, 0, sizeof(env->hm_use_count));
     env->key_item_mask = 0;
+    env->key_progress = key_progress_mask(&env->cur);
     memset(&env->item_use, 0, sizeof(env->item_use));
     env->tm_pending = 0;
     env->tm_pending_steps = 0;
@@ -417,15 +451,18 @@ static void handle_blackout(Env *env) {
     env->score += w;
     env->totals.death += w;
     env->episode.blackouts++;
-    clear_visited(env);
+    if (env->blackout_clear_visited)
+        clear_visited(env);
 }
 
 static void puf_step_body(Env *env) {
     env->agents[0].rewards[0] = 0;
     env->agents[0].terminals[0] = 0;
     env->step_count++;
+    RewardTotals totals_before = env->totals;
 
     int action = (int)env->agents[0].actions[0];
+    env->requested_action = action;
     if (!env->start_select_enabled && (action == PKRED_ACTION_START || action == PKRED_ACTION_SELECT))
         action = -1;
     int hm = action - PKRED_ACTION_HM_CUT;
@@ -441,6 +478,12 @@ static void puf_step_body(Env *env) {
     pk_episode_update_length(&env->episode, &env->cur);
 
     float reward = calculate_rewards(env);
+    if (is_battle_active(&env->cur)) {
+        env->battle_steps++;
+        env->ghost_battle_steps += (env->cur.step_events & PK_EV_GHOST_BATTLE) != 0;
+    }
+    if (reward > 0.0f)
+        env->last_reward_step = env->step_count;
     update_observations(env);
     update_action_mask(env);
     env->agents[0].rewards[0] = reward;
@@ -454,6 +497,9 @@ static void puf_step_body(Env *env) {
 
     if (env->cur.step_events & PK_EV_BLACKOUT)
         handle_blackout(env);
+#define PK_SIG_STEP(name, fn, key, penalty, summed) env->step_totals.name = env->totals.name - totals_before.name;
+    PK_REWARD_SIGNALS(PK_SIG_STEP)
+#undef PK_SIG_STEP
 
     if (env->episode.max_length > 0 && env->step_count >= env->episode.max_length)
         end_episode(env);
@@ -564,9 +610,90 @@ static void render_draw(Env* env, Rectangle dst) {
         draw_tile_ids(env, dst);
 }
 
+#define PK_PANEL_H 296
+#define PK_PANEL_INFO_H 240
+
+static const char *const PK_ACTION_NAMES[PKRED_ACTION_COUNT] = {
+    "A", "B", "RIGHT", "LEFT", "UP", "DOWN", "START", "SELECT", "CUT", "FLY", "SURF", "STR", "FLASH"};
+
+static const char *status_label(uint8_t status) {
+    if (status & 0x07) return "SLP";
+    if (status & 0x08) return "PSN";
+    if (status & 0x10) return "BRN";
+    if (status & 0x20) return "FRZ";
+    if (status & 0x40) return "PAR";
+    return "";
+}
+
+static void draw_info_panel(Env *env, Rectangle box) {
+    const PkSnapshot *s = &env->cur;
+    const Color ink = RAYWHITE, dim = GRAY;
+    DrawRectangleRec(box, (Color){24, 24, 32, 255});
+    DrawLine((int)box.x, (int)box.y, (int)(box.x + box.width), (int)box.y, dim);
+
+    int x = (int)box.x + 10, y = (int)box.y + 8;
+    DrawText(TextFormat("PARTY %d/6", s->party_count), x, y, 16, dim);
+    y += 22;
+    for (int i = 0; i < PARTY_SIZE; i++, y += 32) {
+        if (i >= s->party_count) {
+            DrawText("-", x, y, 18, dim);
+            continue;
+        }
+        const PkMon *m = &s->party[i];
+        float frac = m->max_hp ? (float)m->hp / (float)m->max_hp : 0.0f;
+        Color bar = frac > 0.5f ? GREEN : frac > 0.2f ? YELLOW : RED;
+        DrawText(PKRED_SPECIES_NAMES[m->species], x, y, 18, ink);
+        DrawText(TextFormat("L%d", m->level), x + 128, y, 18, ink);
+        DrawRectangle(x + 172, y + 4, 80, 10, DARKGRAY);
+        DrawRectangle(x + 172, y + 4, (int)(80 * frac), 10, bar);
+        DrawText(TextFormat("%d/%d", m->hp, m->max_hp), x + 260, y, 16, ink);
+        DrawText(status_label(m->status), x + 128, y + 16, 12, ORANGE);
+    }
+
+    x = (int)(box.x + box.width * 0.58f);
+    y = (int)box.y + 8;
+    float r = env->agents[0].rewards[0];
+    Color rc = r > 0 ? GREEN : r < 0 ? RED : ink;
+    DrawText(TextFormat("STEP %d", env->step_count), x, y, 16, dim);
+    y += 22;
+    DrawText(TextFormat("reward %+.4f", r), x, y, 18, rc);
+    y += 22;
+    DrawText(TextFormat("return %.3f", env->score), x, y, 16, ink);
+    y += 24;
+#define PK_SIG_DRAW(name, fn, key, penalty, summed)                                          \
+    {                                                                                        \
+        float v = env->step_totals.name;                                                     \
+        DrawText(#name, x, y, 12, v != 0.0f ? ink : dim);                                    \
+        DrawText(TextFormat("%+.4f", v), x + 80, y, 12, v > 0 ? GREEN : v < 0 ? RED : dim);  \
+        DrawText(TextFormat("%.3f", env->totals.name), x + 160, y, 12, dim);                 \
+        y += 14;                                                                             \
+    }
+    PK_REWARD_SIGNALS(PK_SIG_DRAW)
+#undef PK_SIG_DRAW
+
+    x = (int)box.x + 10;
+    y = (int)box.y + PK_PANEL_INFO_H;
+    int req = env->requested_action, done = env->prev_action;
+    bool blocked = req >= 0 && req < PKRED_ACTION_COUNT && req != done;
+    DrawText(TextFormat("ACTION %s", done >= 0 ? PK_ACTION_NAMES[done] : "NOOP"), x, y, 16, dim);
+    if (blocked)
+        DrawText(TextFormat("(%s blocked)", PK_ACTION_NAMES[req]), x + 140, y + 2, 12, RED);
+    float cw = (box.width - 20) / PKRED_ACTION_COUNT;
+    for (int a = 0; a < PKRED_ACTION_COUNT; a++) {
+        Rectangle cell = {box.x + 10 + a * cw + 1, (float)y + 20, cw - 2, 26};
+        bool avail = action_available(env, a);
+        bool bad = blocked && a == req;
+        DrawRectangleRec(cell, a == done ? GOLD : (Color){40, 40, 52, 255});
+        DrawRectangleLinesEx(cell, bad ? 2 : 1, bad ? RED : dim);
+        Color text = a == done ? BLACK : avail ? ink : (Color){80, 80, 90, 255};
+        int w = MeasureText(PK_ACTION_NAMES[a], 10);
+        DrawText(PK_ACTION_NAMES[a], (int)(cell.x + (cell.width - w) / 2), (int)cell.y + 8, 10, text);
+    }
+}
+
 void puf_render(Env* env) {
     if (!IsWindowReady()) {
-        render_init(env, SCREEN_WIDTH * 4, PK_FRAME_H * 4, 0);
+        render_init(env, SCREEN_WIDTH * 4, PK_FRAME_H * 4 + (env->render_panel ? PK_PANEL_H : 0), 0);
     }
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
@@ -626,7 +753,10 @@ void puf_render(Env* env) {
 
     BeginDrawing();
     ClearBackground(BLACK);
-    render_draw(env, (Rectangle){0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()});
+    float game_h = (float)GetScreenHeight() - (env->render_panel ? PK_PANEL_H : 0);
+    render_draw(env, (Rectangle){0, 0, (float)GetScreenWidth(), game_h});
+    if (env->render_panel)
+        draw_info_panel(env, (Rectangle){0, game_h, (float)GetScreenWidth(), PK_PANEL_H});
     EndDrawing();
     puf_web_vsync();
 }
@@ -645,7 +775,6 @@ void puf_close(Env *env) {
     stream_close(&env->stream);
     free(env->visited_coords);
     free(env->visited_cells);
-    free(env->map_visited_counts);
     free(env->prev_events);
     free(env->paid_events);
 }
@@ -659,6 +788,10 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "party_count", log->party_count);
     dict_set(out, "pokedex_owned", log->pokedex_owned);
     dict_set(out, "pokedex_seen", log->pokedex_seen);
+    dict_set(out, "money", log->money);
+    dict_set(out, "money_gained", log->money_gained);
+    dict_set(out, "coins", log->coins);
+    dict_set(out, "coins_gained", log->coins_gained);
     dict_set(out, "badges", log->badges);
     dict_set(out, "event_sum", log->event_sum);
     dict_set(out, "progress", log->progress);
@@ -675,6 +808,9 @@ void puf_log(Log *log, Dict *out) {
     PK_REWARD_SIGNALS(PK_SIG_LOG)
 #undef PK_SIG_LOG
 
+    dict_set(out, "battle_steps", log->battle_steps);
+    dict_set(out, "ghost_battle_steps", log->ghost_battle_steps);
+    dict_set(out, "steps_since_reward", log->steps_since_reward);
     dict_set(out, "episode_extensions", log->episode_extensions);
     dict_set(out, "n", log->n);
 }

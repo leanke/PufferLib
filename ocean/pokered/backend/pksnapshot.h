@@ -58,6 +58,7 @@ typedef struct PkMemReader {
 } PkMemReader;
 
 #define PK_POKEDEX_BYTES ((PKRED_POKEDEX_NUM_POKEMON + 7) / 8)
+typedef char pk_dex_bytes_match[PK_POKEDEX_BYTES == PK_DEX_BYTES ? 1 : -1];
 
 static inline __attribute__((always_inline)) int pk_snap_popcount(const PkMemReader *m, uint16_t addr, int n) {
     const uint8_t *p = m->span(m->ctx, addr, (unsigned)n);
@@ -111,6 +112,16 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
             knows_cut |= s->party[i].moves[k] == PKRED_MOVE_CUT;
     s->pokedex_owned_count = (uint8_t)pk_snap_popcount(m, PKRED_ADDR_POKEDEX_OWNED, PK_POKEDEX_BYTES);
     s->pokedex_seen_count = (uint8_t)pk_snap_popcount(m, PKRED_ADDR_POKEDEX_SEEN, PK_POKEDEX_BYTES);
+    for (int i = 0; i < PK_DEX_BYTES; i++)
+        s->dex_owned[i] = m->u8(c, (uint16_t)(PKRED_ADDR_POKEDEX_OWNED + i));
+    for (int i = 0; i < 3; i++) {
+        uint8_t bcd = m->u8(c, (uint16_t)(PKRED_ADDR_PLAYER_MONEY + i));
+        s->money = s->money * 100 + (bcd >> 4) * 10 + (bcd & 0x0F);
+    }
+    for (int i = 0; i < 2; i++) {
+        uint8_t bcd = m->u8(c, (uint16_t)(PKRED_ADDR_PLAYER_COINS + i));
+        s->coins = (uint16_t)(s->coins * 100 + (bcd >> 4) * 10 + (bcd & 0x0F));
+    }
 
     s->hp_fraction = 1.0f;
     if (s->party_count > 0) {
@@ -146,6 +157,7 @@ static inline __attribute__((always_inline)) void pk_snapshot_extract(const PkMe
     s->surfing = walk_bike_surf == PKRED_SURF_STATE;
     s->biking = walk_bike_surf == PKRED_BIKE_STATE;
     s->strength_active = (m->u8(c, PKRED_ADDR_STATUS_FLAGS1) >> PKRED_STATUS_FLAGS1_STRENGTH_BIT) & 1;
+    s->gave_guards_drink = (m->u8(c, PKRED_ADDR_STATUS_FLAGS1) >> PKRED_STATUS_FLAGS1_GAVE_DRINK_BIT) & 1;
     s->used_fly = (m->u8(c, PKRED_ADDR_STATUS_FLAGS7) >> PKRED_STATUS_FLAGS7_USED_FLY_BIT) & 1;
     s->dark_cave = m->u8(c, PKRED_ADDR_MAP_PAL_OFFSET) == PKRED_PAL_DARK_CAVE;
     if (knows_cut) {

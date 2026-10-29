@@ -60,6 +60,15 @@ static const uint8_t PKMS_ITEM_IDS[] = {
 };
 #define PKMS_KEY_ITEMS ((int)(sizeof(PKMS_ITEM_IDS) / sizeof(PKMS_ITEM_IDS[0])))
 
+static inline bool pk_ghost_battle(const PkSnapshot *s) {
+    if (s->in_battle != 1 || s->map_n < PKRED_MAP_POKEMON_TOWER_1F || s->map_n > PKRED_MAP_POKEMON_TOWER_7F)
+        return false;
+    for (int i = 0; i < s->bag_count; i++)
+        if (s->bag[i].item == PKRED_ITEM_SILPH_SCOPE)
+            return false;
+    return true;
+}
+
 typedef struct PkEventTracker {
     bool rebase, pending;
     bool wiped;
@@ -68,6 +77,7 @@ typedef struct PkEventTracker {
     bool battle_active;
     uint16_t enemy_hp;
     uint16_t mons_at_battle_start;
+    bool ghost_battle;
     uint8_t cut_fired;
     bool cut_swapped;
     uint16_t cut_wait;
@@ -78,6 +88,7 @@ static inline void pk_events_rebase(PkEventTracker *t) {
     t->pending = false;
     t->wiped = false;
     t->escape_latched = false;
+    t->ghost_battle = false;
     t->last = 0;
     t->cut_fired = 0;
     t->cut_swapped = false;
@@ -105,6 +116,8 @@ static inline void pk_events_apply(PkEventTracker *t, PkSnapshot *s) {
             t->escape_latched = false;
         }
         if (fled) ev |= PK_EV_BATTLE_FLED;
+        bool ghost = active && !t->battle_active ? pk_ghost_battle(s) : t->ghost_battle;
+        if (ghost && (active || t->battle_active)) ev |= PK_EV_GHOST_BATTLE;
 
         if (s->party_count == 0 || s->hp_fraction > 0.0f) {
             t->wiped = false;
@@ -115,8 +128,10 @@ static inline void pk_events_apply(PkEventTracker *t, PkSnapshot *s) {
         t->last = ev;
     }
     if (t->pending || t->rebase) {
-        if (active && (!t->battle_active || t->rebase))
+        if (active && (!t->battle_active || t->rebase)) {
             t->mons_at_battle_start = (uint16_t)(s->party_count + s->box_count);
+            t->ghost_battle = pk_ghost_battle(s);
+        }
         t->battle_active = active;
         t->enemy_hp = s->enemy_mon.hp;
     }

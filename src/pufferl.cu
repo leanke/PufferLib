@@ -1835,6 +1835,14 @@ void puf_load_weights_into(Float dst, Prec params,
     int64_t nbytes = numel(dst.shape) * sizeof(float);
     FILE* fp = fopen(path, "rb");
     assert(fp && "failed to open weights for reading");
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (fsize != nbytes) {
+        fprintf(stderr, "weights %s: %ld bytes, policy expects %ld "
+            "(check policy.hidden_size/num_layers)\n", path, fsize, (long)nbytes);
+        assert(0 && "weights size does not match policy");
+    }
     char* buf = (char*)malloc(nbytes);
     size_t nread = fread(buf, 1, nbytes, fp);
     fclose(fp);
@@ -3451,6 +3459,20 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
     }
 
     PuffeRL* pufferl = create_pufferl(ini, ctx);
+    char load_buf[4096];
+    const char* load_path = puf_checkpoint_path_key(ini, "load_model_path",
+        load_buf, sizeof(load_buf));
+    if (load_path) {
+        pufferl_load_policy(pufferl, 0, load_path);
+        if (pufferl->hypers.async) {
+            puf_copy(&pufferl->actor_param, &pufferl->policies[0].param,
+                pufferl->default_stream);
+            cudaStreamSynchronize(pufferl->default_stream);
+        }
+        if (ctx->artifact_owner) {
+            printf("Loaded initial weights from %s\n", load_path);
+        }
+    }
     Selfplay selfplay = {0};
     if (use_selfplay) {
         char initial_checkpoint[4096];

@@ -68,10 +68,14 @@ run() {
             # Headless single-agent eval; run_eval already forces verbose
             # dashboard output for eval/match modes. max_episode_length=0 disables the
             # step cap (endless episode); a trailing override still wins.
-            local verbose backend
+            local verbose backend model=latest
+            if [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && [ "${1#*=}" = "$1" ]; then
+                model="$1"
+                shift
+            fi
             backend="$(prompt_backend)"
             verbose="$(prompt_bool "env.verbose" "True")"
-            exec ./puffer eval latest "--env.backend=$backend" "--env.verbose=$verbose" "--env.max_episode_length=0" "$@"
+            exec ./puffer eval "$model" "--env.backend=$backend" "--env.verbose=$verbose" "--env.max_episode_length=0" "--env.render_panel=True" "$@"
             ;;
         pokered)
             local verbose

@@ -23,8 +23,14 @@
 #define PKR_BAG_SLOT_FEAT (PKR_ITEM_EMBED + 3)
 #define PKR_HM_BITS 5
 
-#define PKR_INFO_FEAT (PKR_MAP_EMBED + PKR_TILESET_EMBED + 8 + FACING_COUNT + INFO_PROGRESS_BITS)
-#define PKR_INFO_IN 40
+#define PKR_COORD_SCALE 128.0f
+#define PKR_DEX_SCALE 151.0f
+#define PKR_MONEY_LOG_MAX 13.815512f
+#define PKR_MAP_EVENTS_SCALE 16.0f
+#define PKR_INFO_EXTRA (2 + TOWN_BITS + MOVEMENT_COUNT + 1 + 1 + 2 + 1 + 3)
+#define PKR_INFO_FEAT \
+    (PKR_MAP_EMBED + PKR_TILESET_EMBED + 8 + FACING_COUNT + INFO_PROGRESS_BITS + INFO_KEY_ITEM_BITS + PKR_INFO_EXTRA)
+#define PKR_INFO_IN 80
 #define PKR_BATTLE_IN 112
 #define PKR_PARTY_IN 312
 #define PKR_BAG_IN 176
@@ -176,6 +182,29 @@ __device__ __forceinline__ float pkr_mon_feature(
     return ((st >> (PKRED_STATUS_PSN_BIT + f - 3)) & 1) ? 1.0f : 0.0f;
 }
 
+__device__ __forceinline__ float pkr_info_extra(const precision_t* __restrict__ info, int c) {
+    if (c < 2) return to_float(info[INFO_X + c]) / PKR_COORD_SCALE;
+    if ((c -= 2) < TOWN_BITS) {
+        int towns = (int)(to_float(info[INFO_TOWNS_LO]) + 0.5f) | (int)(to_float(info[INFO_TOWNS_HI]) + 0.5f) << 8;
+        return (towns >> c) & 1 ? 1.0f : 0.0f;
+    }
+    if ((c -= TOWN_BITS) < MOVEMENT_COUNT)
+        return pkr_clamp_id(to_float(info[INFO_MOVEMENT]), MOVEMENT_COUNT) == c ? 1.0f : 0.0f;
+    if ((c -= MOVEMENT_COUNT) == 0) return to_float(info[INFO_STRENGTH]);
+    if (--c == 0) {
+        float money = 0.0f;
+        for (int i = 0; i < INFO_MONEY_DIGITS; i++)
+            money = money * 100.0f + to_float(info[INFO_MONEY + i]);
+        return log1pf(money) / PKR_MONEY_LOG_MAX;
+    }
+    if (--c < 2) return to_float(info[INFO_DEX_OWNED + c]) / PKR_DEX_SCALE;
+    if ((c -= 2) == 0) return to_float(info[INFO_EVENTS]) / PK_OBS_HP_SCALE;
+    float left = to_float(info[INFO_MAP_EVENTS_LEFT]), total = to_float(info[INFO_MAP_EVENTS_TOTAL]);
+    if (c == 1) return fminf(left / PKR_MAP_EVENTS_SCALE, 1.0f);
+    if (c == 2) return left > 0.0f ? 1.0f : 0.0f;
+    return total > 0.0f ? left / total : 0.0f;
+}
+
 struct PkrTailArgs {
     const precision_t* obs;
     const precision_t* species_w;
@@ -212,6 +241,10 @@ __global__ void pkr_tail_gather_kernel(PkrTailArgs a) {
             v = pkr_clamp_id(to_float(row[INFO_OBS_OFFSET + INFO_FACING]), FACING_COUNT) == c ? 1.0f : 0.0f;
         } else if ((c -= FACING_COUNT) < INFO_PROGRESS_BITS) {
             v = to_float(row[INFO_OBS_OFFSET + INFO_PROGRESS + c]);
+        } else if ((c -= INFO_PROGRESS_BITS) < INFO_KEY_ITEM_BITS) {
+            v = to_float(row[INFO_OBS_OFFSET + INFO_KEY_ITEMS + c]);
+        } else if ((c -= INFO_KEY_ITEM_BITS) < PKR_INFO_EXTRA) {
+            v = pkr_info_extra(row + INFO_OBS_OFFSET, c);
         }
     } else if (c < PKR_IN_PARTY) {
         c -= PKR_IN_BATTLE;
